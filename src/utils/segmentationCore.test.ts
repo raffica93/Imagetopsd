@@ -20,22 +20,44 @@ test('colorDistance calculates correct Euclidean distance', () => {
 test('isPixelBackground detects alpha transparency', () => {
   // Alpha = 0 -> background
   assert.equal(
-    isPixelBackground(255, 255, 255, 0, 'alpha', { r: 255, g: 255, b: 255 }, 20),
-    true
+    isPixelBackground(
+      255,
+      255,
+      255,
+      0,
+      'alpha',
+      { r: 255, g: 255, b: 255 },
+      20,
+    ),
+    true,
   );
   // Alpha = 255 -> foreground in alpha mode
   assert.equal(
-    isPixelBackground(255, 255, 255, 255, 'alpha', { r: 255, g: 255, b: 255 }, 20),
-    false
+    isPixelBackground(
+      255,
+      255,
+      255,
+      255,
+      'alpha',
+      { r: 255, g: 255, b: 255 },
+      20,
+    ),
+    false,
   );
 });
 
 test('isPixelBackground detects color keying with tolerance', () => {
   const white = { r: 255, g: 255, b: 255 };
   // Pure white pixel with full alpha
-  assert.equal(isPixelBackground(255, 255, 255, 255, 'colorKey', white, 30), true);
+  assert.equal(
+    isPixelBackground(255, 255, 255, 255, 'colorKey', white, 30),
+    true,
+  );
   // Off-white pixel (250, 250, 250) -> distance is sqrt(3 * 25) = ~8.66 <= 30 -> background
-  assert.equal(isPixelBackground(250, 250, 250, 255, 'colorKey', white, 30), true);
+  assert.equal(
+    isPixelBackground(250, 250, 250, 255, 'colorKey', white, 30),
+    true,
+  );
   // Saturated red pixel (255, 0, 0) -> not background
   assert.equal(isPixelBackground(255, 0, 0, 255, 'colorKey', white, 30), false);
 });
@@ -145,14 +167,53 @@ test('segmentImageByColors decomposes a single illustration into distinct color 
   });
 
   // Verify that multi-layer decomposition was successful (more than 1 layer!)
-  assert.ok(result.clusters.length >= 2, 'Should detect multiple layers from single subject');
+  assert.ok(
+    result.clusters.length >= 2,
+    'Should detect multiple layers from single subject',
+  );
   assert.ok(result.logs.length > 0, 'Logs must be populated');
   assert.ok(result.logs.some((l) => l.category === 'ANALISI'));
   assert.ok(result.logs.some((l) => l.category === 'ALPHA'));
   assert.ok(result.logs.some((l) => l.category === 'SUCCESSO'));
 
   // Lineart should be detected
-  const lineartCluster = result.clusters.find((c) => c.name.includes('Lineart') || c.name.includes('Contorni'));
+  const lineartCluster = result.clusters.find(
+    (c) => c.name.includes('Lineart') || c.name.includes('Contorni'),
+  );
   assert.ok(lineartCluster, 'Lineart cluster should be extracted');
   assert.equal(lineartCluster.pixelCount, 6);
+});
+
+test('filtering a sparse color cluster remaps every retained pixel to its new cluster index', () => {
+  const width = 30,
+    height = 10,
+    data = new Uint8ClampedArray(width * height * 4);
+  for (let y = 0; y < height; y++)
+    for (let x = 0; x < width; x++)
+      data.set(
+        x < 3
+          ? [220, 30, 30, 255]
+          : x < 16
+            ? [30, 200, 50, 255]
+            : [30, 60, 220, 255],
+        (y * width + x) * 4,
+      );
+  const result = segmentImageByColors(data, width, height, {
+    numberOfColors: 3,
+    separateLineart: false,
+    bgMode: 'alpha',
+    minPixelCount: 40,
+  });
+  assert.equal(result.clusters.length, 2);
+  result.clusters.forEach((cluster, i) =>
+    assert.equal(
+      [...result.pixelClusterIndices].filter((index) => index === i).length,
+      cluster.pixelCount,
+    ),
+  );
+  assert.ok(
+    [...result.pixelClusterIndices].every(
+      (i) => i === -1 || i < result.clusters.length,
+    ),
+  );
 });

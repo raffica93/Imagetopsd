@@ -9,7 +9,7 @@ export function colorDistance(
   b1: number,
   r2: number,
   g2: number,
-  b2: number
+  b2: number,
 ): number {
   const dr = r1 - r2;
   const dg = g1 - g2;
@@ -27,7 +27,7 @@ export function isPixelBackground(
   a: number,
   mode: 'alpha' | 'colorKey',
   targetColor: { r: number; g: number; b: number },
-  tolerance: number
+  tolerance: number,
 ): boolean {
   // If alpha is very low, it's considered transparent background
   if (a < 15) {
@@ -40,7 +40,14 @@ export function isPixelBackground(
   }
 
   // In colorKey mode, check distance to target background color (e.g. white #ffffff)
-  const dist = colorDistance(r, g, b, targetColor.r, targetColor.g, targetColor.b);
+  const dist = colorDistance(
+    r,
+    g,
+    b,
+    targetColor.r,
+    targetColor.g,
+    targetColor.b,
+  );
   return dist <= tolerance;
 }
 
@@ -52,7 +59,7 @@ export function findConnectedComponents(
   width: number,
   height: number,
   isForeground: (x: number, y: number) => boolean,
-  minPixelCount: number = 50
+  minPixelCount: number = 50,
 ): BoundingBox[] {
   const visited = new Uint8Array(width * height);
   const boxes: BoundingBox[] = [];
@@ -137,47 +144,75 @@ export function findConnectedComponentsWithDiagnostics(
   height: number,
   isForeground: (x: number, y: number) => boolean,
   minPixelCount: number = 50,
-  bgStats?: { totalPixels: number; bgPixels: number; fgPixels: number; mode: string }
+  bgStats?: {
+    totalPixels: number;
+    bgPixels: number;
+    fgPixels: number;
+    mode: string;
+  },
 ): { boxes: BoundingBox[]; logs: SegmentationLogEntry[] } {
   const logs: SegmentationLogEntry[] = [];
   const log = (
     category: SegmentationLogEntry['category'],
     message: string,
     level: SegmentationLogEntry['level'] = 'info',
-    details?: string
+    details?: string,
   ) => {
     const entry = createLogEntry(category, message, level, details);
     logs.push(entry);
-    if (level === 'warn') console.warn(`[FrescoLayers:${category}] ${message}`, details || '');
+    if (level === 'warn')
+      console.warn(`[FrescoLayers:${category}] ${message}`, details || '');
     else console.log(`[FrescoLayers:${category}] ${message}`, details || '');
   };
 
-  log('ANALISI', `Scansione spaziale: ${width}x${height} px (Filtro rumore minimo: ${minPixelCount} px)`);
+  log(
+    'ANALISI',
+    `Scansione spaziale: ${width}x${height} px (Filtro rumore minimo: ${minPixelCount} px)`,
+  );
   if (bgStats) {
     const bgPct = ((bgStats.bgPixels / bgStats.totalPixels) * 100).toFixed(1);
     const fgPct = ((bgStats.fgPixels / bgStats.totalPixels) * 100).toFixed(1);
-    log('ALPHA', `Pixel sfondo: ${bgStats.bgPixels.toLocaleString()} (${bgPct}%), Pixel primo piano: ${bgStats.fgPixels.toLocaleString()} (${fgPct}%)`);
+    log(
+      'ALPHA',
+      `Pixel sfondo: ${bgStats.bgPixels.toLocaleString()} (${bgPct}%), Pixel primo piano: ${bgStats.fgPixels.toLocaleString()} (${fgPct}%)`,
+    );
   }
 
-  const rawBoxes = findConnectedComponents(width, height, isForeground, minPixelCount);
-  log('SEGMENTAZIONE', `Algoritmo BFS: individuate ${rawBoxes.length} isole spaziali di pixel contigui`);
+  const rawBoxes = findConnectedComponents(
+    width,
+    height,
+    isForeground,
+    minPixelCount,
+  );
+  log(
+    'SEGMENTAZIONE',
+    `Algoritmo BFS: individuate ${rawBoxes.length} isole spaziali di pixel contigui`,
+  );
 
   if (rawBoxes.length === 1) {
     const b = rawBoxes[0];
     log(
       'DIAGNOSTICA',
       `⚠️ Rilevato 1 solo elemento connesso (${b.pixelCount.toLocaleString()} px, box: [${b.minX},${b.minY} - ${b.maxX},${b.maxY}]). Tutti i pixel del soggetto si toccano continuamente.`,
-      'warn'
+      'warn',
     );
     log(
       'DIAGNOSTICA',
       `💡 SUGGERIMENTO: Per estrarre più livelli (Pelle, Abiti, Capelli, Spada, Lineart) da una singola illustrazione, attiva la modalità "Scomposizione per Colore / Tinte" in alto!`,
-      'info'
+      'info',
     );
   } else if (rawBoxes.length > 1) {
-    log('SUCCESSO', `Rilevati con successo ${rawBoxes.length} elementi spazialmente separati!`, 'success');
+    log(
+      'SUCCESSO',
+      `Rilevati con successo ${rawBoxes.length} elementi spazialmente separati!`,
+      'success',
+    );
   } else {
-    log('DIAGNOSTICA', `Nessun elemento sopra la soglia minima di ${minPixelCount} px. Prova ad abbassare il filtro rumore o controllare il colore di sfondo.`, 'warn');
+    log(
+      'DIAGNOSTICA',
+      `Nessun elemento sopra la soglia minima di ${minPixelCount} px. Prova ad abbassare il filtro rumore o controllare il colore di sfondo.`,
+      'warn',
+    );
   }
 
   return { boxes: rawBoxes, logs };
@@ -190,7 +225,7 @@ export function expandBoundingBox(
   box: BoundingBox,
   padding: number,
   maxWidth: number,
-  maxHeight: number
+  maxHeight: number,
 ): BoundingBox {
   return {
     minX: Math.max(0, box.minX - padding),
@@ -251,7 +286,13 @@ export interface SegmentationLogEntry {
   id: string;
   timestamp: string;
   level: 'info' | 'warn' | 'success' | 'debug';
-  category: 'ANALISI' | 'ALPHA' | 'SEGMENTAZIONE' | 'COLORI' | 'DIAGNOSTICA' | 'SUCCESSO';
+  category:
+    | 'ANALISI'
+    | 'ALPHA'
+    | 'SEGMENTAZIONE'
+    | 'COLORI'
+    | 'DIAGNOSTICA'
+    | 'SUCCESSO';
   message: string;
   details?: string;
 }
@@ -260,10 +301,13 @@ export function createLogEntry(
   category: SegmentationLogEntry['category'],
   message: string,
   level: SegmentationLogEntry['level'] = 'info',
-  details?: string
+  details?: string,
 ): SegmentationLogEntry {
   const d = new Date();
-  const timeStr = d.toTimeString().split(' ')[0] + '.' + String(d.getMilliseconds()).padStart(3, '0');
+  const timeStr =
+    d.toTimeString().split(' ')[0] +
+    '.' +
+    String(d.getMilliseconds()).padStart(3, '0');
   return {
     id: `log-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
     timestamp: timeStr,
@@ -304,16 +348,24 @@ export interface ColorSegmentationOutput {
 }
 
 export function rgbToHex(r: number, g: number, b: number): string {
-  const toHex = (n: number) => Math.min(255, Math.max(0, Math.round(n))).toString(16).padStart(2, '0');
+  const toHex = (n: number) =>
+    Math.min(255, Math.max(0, Math.round(n)))
+      .toString(16)
+      .padStart(2, '0');
   return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
 }
 
 /**
  * Descriptive label for common color tones (helps user identify layers in Fresco)
  */
-export function getDescriptiveColorName(r: number, g: number, b: number, isLineart?: boolean): string {
+export function getDescriptiveColorName(
+  r: number,
+  g: number,
+  b: number,
+  isLineart?: boolean,
+): string {
   if (isLineart) return 'Tratto & Contorni (Lineart)';
-  
+
   const brightness = (r * 299 + g * 587 + b * 114) / 1000;
   const max = Math.max(r, g, b);
   const min = Math.min(r, g, b);
@@ -349,24 +401,28 @@ export function segmentImageByColors(
   data: Uint8ClampedArray | Uint8Array,
   width: number,
   height: number,
-  options: ColorSegmentationOptions
+  options: ColorSegmentationOptions,
 ): ColorSegmentationOutput {
   const logs: SegmentationLogEntry[] = [];
   const log = (
     category: SegmentationLogEntry['category'],
     message: string,
     level: SegmentationLogEntry['level'] = 'info',
-    details?: string
+    details?: string,
   ) => {
     const entry = createLogEntry(category, message, level, details);
     logs.push(entry);
     // Also mirror to console for developer inspectability
-    if (level === 'warn') console.warn(`[FrescoLayers:${category}] ${message}`, details || '');
+    if (level === 'warn')
+      console.warn(`[FrescoLayers:${category}] ${message}`, details || '');
     else console.log(`[FrescoLayers:${category}] ${message}`, details || '');
   };
 
   const totalPixels = width * height;
-  log('ANALISI', `Inizio analisi canvas: ${width}x${height} px (${totalPixels.toLocaleString()} pixel totali)`);
+  log(
+    'ANALISI',
+    `Inizio analisi canvas: ${width}x${height} px (${totalPixels.toLocaleString()} pixel totali)`,
+  );
 
   const bgMode = options.bgMode;
   const targetColor = options.targetColor || { r: 255, g: 255, b: 255 };
@@ -375,7 +431,10 @@ export function segmentImageByColors(
   const separateLineart = options.separateLineart ?? true;
   const minPixels = options.minPixelCount ?? 15;
 
-  log('ALPHA', `Modalità sfondo: ${bgMode === 'alpha' ? 'Trasparenza Alpha (PNG)' : `Color Key (${rgbToHex(targetColor.r, targetColor.g, targetColor.b)}, tolleranza ${tolerance})`}`);
+  log(
+    'ALPHA',
+    `Modalità sfondo: ${bgMode === 'alpha' ? 'Trasparenza Alpha (PNG)' : `Color Key (${rgbToHex(targetColor.r, targetColor.g, targetColor.b)}, tolleranza ${tolerance})`}`,
+  );
 
   // 1. Identify foreground pixels and separate background
   const pixelClusterIndices = new Int16Array(totalPixels);
@@ -402,10 +461,17 @@ export function segmentImageByColors(
   const bgPercentage = ((bgPixels / totalPixels) * 100).toFixed(1);
   const fgPercentage = ((fgPixels / totalPixels) * 100).toFixed(1);
 
-  log('ALPHA', `Trasparenza: ${bgPixels.toLocaleString()} pixel sfondo (${bgPercentage}%), ${fgPixels.toLocaleString()} pixel utili primo piano (${fgPercentage}%)`);
+  log(
+    'ALPHA',
+    `Trasparenza: ${bgPixels.toLocaleString()} pixel sfondo (${bgPercentage}%), ${fgPixels.toLocaleString()} pixel utili primo piano (${fgPercentage}%)`,
+  );
 
   if (fgPixels === 0) {
-    log('DIAGNOSTICA', 'Nessun pixel di primo piano trovato. L\'immagine risulta completamente trasparente o corrisponde al colore di sfondo.', 'warn');
+    log(
+      'DIAGNOSTICA',
+      "Nessun pixel di primo piano trovato. L'immagine risulta completamente trasparente o corrisponde al colore di sfondo.",
+      'warn',
+    );
     return {
       clusters: [],
       pixelClusterIndices,
@@ -433,7 +499,10 @@ export function segmentImageByColors(
         colorFgIndices.push(idx);
       }
     }
-    log('COLORI', `Rilevamento Lineart/Contorni: ${lineartIndices.length.toLocaleString()} pixel scuri isolati (${((lineartIndices.length / fgPixels) * 100).toFixed(1)}%)`);
+    log(
+      'COLORI',
+      `Rilevamento Lineart/Contorni: ${lineartIndices.length.toLocaleString()} pixel scuri isolati (${((lineartIndices.length / fgPixels) * 100).toFixed(1)}%)`,
+    );
   } else {
     for (const idx of fgIndices) {
       colorFgIndices.push(idx);
@@ -441,7 +510,10 @@ export function segmentImageByColors(
   }
 
   // 3. Cluster remaining color foreground pixels using k-means
-  const effectiveK = separateLineart && lineartIndices.length > 50 ? Math.max(1, numClusters - 1) : numClusters;
+  const effectiveK =
+    separateLineart && lineartIndices.length > 50
+      ? Math.max(1, numClusters - 1)
+      : numClusters;
   const sampleCount = colorFgIndices.length;
   const centroids: Array<{ r: number; g: number; b: number }> = [];
 
@@ -449,7 +521,10 @@ export function segmentImageByColors(
     // Deterministic spread initialization of centroids
     const step = Math.max(1, Math.floor(sampleCount / effectiveK));
     for (let k = 0; k < effectiveK; k++) {
-      const pickIdx = colorFgIndices[Math.min(sampleCount - 1, k * step + Math.floor(step / 2))];
+      const pickIdx =
+        colorFgIndices[
+          Math.min(sampleCount - 1, k * step + Math.floor(step / 2))
+        ];
       const p = pickIdx * 4;
       centroids.push({
         r: data[p],
@@ -503,6 +578,7 @@ export function segmentImageByColors(
   // 4. Assign pixels to final cluster indices
   // If lineart was separated, cluster index 0 is lineart
   const finalClusters: ColorClusterInfo[] = [];
+  const remap = new Int16Array(centroids.length + 1).fill(-1);
   let clusterOffset = 0;
 
   if (separateLineart && lineartIndices.length >= minPixels) {
@@ -547,6 +623,7 @@ export function segmentImageByColors(
     });
 
     clusterOffset = 1;
+    remap[0] = 0;
   }
 
   // Add the centroids as subsequent clusters
@@ -594,6 +671,7 @@ export function segmentImageByColors(
   for (let k = 0; k < clusterStats.length; k++) {
     const st = clusterStats[k];
     if (st.pixelCount >= minPixels) {
+      remap[k + clusterOffset] = finalClusters.length;
       finalClusters.push({
         r: st.r,
         g: st.g,
@@ -613,13 +691,29 @@ export function segmentImageByColors(
     }
   }
 
-  // Sort color clusters by pixel count (descending) or keep lineart at top
-  log('SEGMENTAZIONE', `Identificati ${finalClusters.length} livelli cromatici distinti per la scomposizione:`);
+  // Filtering sparse clusters must not leave stale indices in the pixel map.
+  for (let i = 0; i < pixelClusterIndices.length; i++) {
+    const index = pixelClusterIndices[i];
+    if (index >= 0) pixelClusterIndices[i] = remap[index];
+  }
+
+  // Keep lineart at top.
+  log(
+    'SEGMENTAZIONE',
+    `Identificati ${finalClusters.length} livelli cromatici distinti per la scomposizione:`,
+  );
   finalClusters.forEach((c, idx) => {
-    log('COLORI', `Livello ${idx + 1}: "${c.name}" (${c.hex}) - ${c.pixelCount.toLocaleString()} px (${c.percentage}%) - BBox: [${c.bounds.minX},${c.bounds.minY} - ${c.bounds.maxX},${c.bounds.maxY}]`);
+    log(
+      'COLORI',
+      `Livello ${idx + 1}: "${c.name}" (${c.hex}) - ${c.pixelCount.toLocaleString()} px (${c.percentage}%) - BBox: [${c.bounds.minX},${c.bounds.minY} - ${c.bounds.maxX},${c.bounds.maxY}]`,
+    );
   });
 
-  log('SUCCESSO', `Completata scomposizione: ${finalClusters.length} livelli Adobe Fresco generabili con successo!`, 'success');
+  log(
+    'SUCCESSO',
+    `Completata scomposizione: ${finalClusters.length} livelli Adobe Fresco generabili con successo!`,
+    'success',
+  );
 
   return {
     clusters: finalClusters,
