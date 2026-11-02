@@ -1,0 +1,6 @@
+{
+  "name": "FrescoLayers - PNG to Multi-Layer PSD for iPad & Adobe Fresco",
+  "description": "Carica foto e collage di immagini PNG, separa automaticamente o manualmente i soggetti in livelli distinti ed esporta un file PSD nativo pronto per Adobe Fresco su iPad.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
