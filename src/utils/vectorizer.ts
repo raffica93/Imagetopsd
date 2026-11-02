@@ -24,6 +24,86 @@ export const DEFAULT_VECTOR_OPTIONS: VectorizeOptions = {
   simplificationLevel: 'medium',
 };
 
+export const QUANTIZATION_TIERS = [2, 4, 8, 16, 32] as const;
+export type QuantizationTier = typeof QUANTIZATION_TIERS[number];
+
+export interface QuantizationTierInfo {
+  colors: number;
+  label: string;
+  sublabel: string;
+  badge: string;
+  description: string;
+  fileEfficiency: string;
+}
+
+export function getQuantizationTierInfo(colors: number): QuantizationTierInfo {
+  if (colors <= 2) {
+    return {
+      colors: 2,
+      label: '2 Colori',
+      sublabel: 'Monocromatico / Silhouette',
+      badge: 'Ultra Leggero',
+      description: 'Massimo contrasto binario e peso file minuscolo. Ideale per timbri, icone e stencil.',
+      fileEfficiency: '-85% peso file',
+    };
+  }
+  if (colors <= 4) {
+    return {
+      colors: 4,
+      label: '4 Colori',
+      sublabel: 'Retro / Minimal Art',
+      badge: 'Leggero',
+      description: 'Stile serigrafia vintage e poster minimal con campiture definite.',
+      fileEfficiency: '-65% peso file',
+    };
+  }
+  if (colors <= 8) {
+    return {
+      colors: 8,
+      label: '8 Colori',
+      sublabel: 'Pop Art / Sticker',
+      badge: 'Ottimizzato',
+      description: 'Perfetto per adesivi, illustrazioni vettoriali stilizzate e cartoon.',
+      fileEfficiency: '-45% peso file',
+    };
+  }
+  if (colors <= 16) {
+    return {
+      colors: 16,
+      label: '16 Colori',
+      sublabel: 'Standard Fresco',
+      badge: 'Consigliato',
+      description: 'Equilibrio eccellente tra fedeltà cromatica e fluidità di modifica in Adobe Fresco.',
+      fileEfficiency: 'Bilanciato',
+    };
+  }
+  return {
+    colors: Math.min(colors, 64),
+    label: `${colors} Colori`,
+    sublabel: 'Fotografico / Sfumature',
+    badge: 'Massima Fedeltà',
+    description: 'Tracciati ricchi con sfumature complesse e precisione cromatica elevata.',
+    fileEfficiency: 'Completo',
+  };
+}
+
+/**
+ * Extracts unique fill colors from an SVG string to preview the quantized palette
+ */
+export function extractPaletteFromSvg(svgString: string, maxColors = 32): string[] {
+  const colorSet = new Set<string>();
+  const fillRegex = /fill\s*=\s*["']([^"']+)["']/gi;
+  let match;
+  while ((match = fillRegex.exec(svgString)) !== null) {
+    const color = match[1].trim();
+    if (color && color !== 'none' && color !== 'transparent') {
+      colorSet.add(color);
+      if (colorSet.size >= maxColors) break;
+    }
+  }
+  return Array.from(colorSet);
+}
+
 /**
  * Returns ImageTracer parameters based on chosen path simplification level
  * - low detail = highest simplification (fewer anchor points, smooth lightweight curves)

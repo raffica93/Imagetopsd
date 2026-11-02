@@ -6,6 +6,7 @@ import {
   findConnectedComponents,
   expandBoundingBox,
   mergeOverlappingBoxes,
+  segmentImageByColors,
 } from './segmentationCore';
 
 test('colorDistance calculates correct Euclidean distance', () => {
@@ -90,4 +91,68 @@ test('mergeOverlappingBoxes merges intersecting boxes correctly', () => {
   assert.equal(merged[0].maxX, 15);
   assert.equal(merged[0].pixelCount, 90);
   assert.equal(merged[1].minX, 50);
+});
+
+test('segmentImageByColors decomposes a single illustration into distinct color layers with detailed logs', () => {
+  // Simulate a 10x10 illustration with:
+  // - transparent background
+  // - black outline (lineart)
+  // - red character body
+  // - blue sword / accessory
+  const width = 10;
+  const height = 10;
+  const data = new Uint8ClampedArray(width * height * 4);
+
+  // Fill all with transparent background initially (alpha = 0)
+  data.fill(0);
+
+  // Black lineart (alpha 255, rgb 10,10,10) on top row y=1, x=2..7
+  for (let x = 2; x <= 7; x++) {
+    const idx = (1 * width + x) * 4;
+    data[idx] = 10;
+    data[idx + 1] = 10;
+    data[idx + 2] = 10;
+    data[idx + 3] = 255;
+  }
+
+  // Red body (alpha 255, rgb 220, 40, 40) on rows y=2..5, x=2..7
+  for (let y = 2; y <= 5; y++) {
+    for (let x = 2; x <= 7; x++) {
+      const idx = (y * width + x) * 4;
+      data[idx] = 220;
+      data[idx + 1] = 40;
+      data[idx + 2] = 40;
+      data[idx + 3] = 255;
+    }
+  }
+
+  // Blue sword (alpha 255, rgb 30, 100, 230) on rows y=6..8, x=4..5
+  for (let y = 6; y <= 8; y++) {
+    for (let x = 4; x <= 5; x++) {
+      const idx = (y * width + x) * 4;
+      data[idx] = 30;
+      data[idx + 1] = 100;
+      data[idx + 2] = 230;
+      data[idx + 3] = 255;
+    }
+  }
+
+  const result = segmentImageByColors(data, width, height, {
+    numberOfColors: 3,
+    separateLineart: true,
+    bgMode: 'alpha',
+    minPixelCount: 2,
+  });
+
+  // Verify that multi-layer decomposition was successful (more than 1 layer!)
+  assert.ok(result.clusters.length >= 2, 'Should detect multiple layers from single subject');
+  assert.ok(result.logs.length > 0, 'Logs must be populated');
+  assert.ok(result.logs.some((l) => l.category === 'ANALISI'));
+  assert.ok(result.logs.some((l) => l.category === 'ALPHA'));
+  assert.ok(result.logs.some((l) => l.category === 'SUCCESSO'));
+
+  // Lineart should be detected
+  const lineartCluster = result.clusters.find((c) => c.name.includes('Lineart') || c.name.includes('Contorni'));
+  assert.ok(lineartCluster, 'Lineart cluster should be extracted');
+  assert.equal(lineartCluster.pixelCount, 6);
 });

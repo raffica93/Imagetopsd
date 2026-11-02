@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   X,
   FileCheck2,
@@ -12,6 +12,12 @@ import {
   Workflow,
   Check,
   ListOrdered,
+  Palette,
+  Terminal,
+  Copy,
+  ChevronDown,
+  ChevronUp,
+  Trash2,
 } from 'lucide-react';
 import { LayerItem, ProjectSettings } from '../types/index';
 import {
@@ -23,6 +29,9 @@ import {
   SimplificationLevel,
   getSimplificationParams,
   countSvgPaths,
+  QUANTIZATION_TIERS,
+  getQuantizationTierInfo,
+  extractPaletteFromSvg,
 } from '../utils/vectorizer';
 import { downloadBlob, shareOrDownloadFile } from '../utils/psdExport';
 
@@ -53,14 +62,24 @@ export const VectorizeModal: React.FC<VectorizeModalProps> = ({
   const [preset, setPreset] = useState<'standard' | 'detailed' | 'flat' | 'mono'>('standard');
   const [simplificationLevel, setSimplificationLevel] = useState<SimplificationLevel>('medium');
   const [numberOfColors, setNumberOfColors] = useState<number>(12);
+  const [colorQuantCycles, setColorQuantCycles] = useState<number>(3);
   const [curveSmoothness, setCurveSmoothness] = useState<'sharp' | 'balanced' | 'smooth'>('balanced');
   const [pathOmit, setPathOmit] = useState<number>(4);
   const [svgPreview, setSvgPreview] = useState<string>('');
   const [isTracing, setIsTracing] = useState<boolean>(false);
   const [viewMode, setViewMode] = useState<'vector' | 'raster'>('vector');
 
+  // Quantization analysis & color swatches preview
+  const quantInfo = useMemo(() => getQuantizationTierInfo(numberOfColors), [numberOfColors]);
+  const extractedPalette = useMemo(() => extractPaletteFromSvg(svgPreview, 32), [svgPreview]);
+
   // Vectorized layers cache when scope is 'all'
   const [vectorizedLayers, setVectorizedLayers] = useState<LayerItem[]>([]);
+  const [vectorLogs, setVectorLogs] = useState<
+    Array<{ timestamp: string; category: string; message: string; level?: 'info' | 'success' | 'warn' }>
+  >([]);
+  const [isLogOpen, setIsLogOpen] = useState<boolean>(false);
+  const [copyFeedback, setCopyFeedback] = useState<boolean>(false);
 
   // Sync selected layer when active layer changes
   useEffect(() => {
@@ -108,30 +127,49 @@ export const VectorizeModal: React.FC<VectorizeModalProps> = ({
     if (!isOpen || layers.length === 0) return;
 
     setIsTracing(true);
+    const timeStr = new Date().toTimeString().split(' ')[0];
+    const newLogs: Array<{ timestamp: string; category: string; message: string; level?: 'info' | 'success' | 'warn' }> = [];
+
+    const addLog = (category: string, message: string, level: 'info' | 'success' | 'warn' = 'info') => {
+      const ts = new Date().toTimeString().split(' ')[0] + '.' + String(new Date().getMilliseconds()).padStart(3, '0');
+      newLogs.push({ timestamp: ts, category, message, level });
+      console.log(`[FrescoVector:${category}] ${message}`);
+    };
+
     const timer = setTimeout(() => {
       try {
+        addLog('CONFIG', `Vettorializzazione avviata. Modalità: ${targetScope === 'all' ? `TUTTI i ${layers.length} livelli separati` : 'Livello attivo'}`);
+        addLog('QUANTIZZAZIONE', `Quantizzazione: ${numberOfColors} colori (${quantInfo.label}), ${colorQuantCycles} cicli K-means`);
+        addLog('PERCORSI', `Semplificazione percorsi: "${simplificationLevel}", Lisciatura: "${curveSmoothness}"`);
+
         if (targetScope === 'active') {
           // Trace only the selected layer
           const layerToTrace = layers.find((l) => l.id === selectedLayerId) || layers[0];
           if (layerToTrace) {
             const { svg, pathCount } = vectorizeCanvas(layerToTrace.canvas, {
               numberOfColors,
+              colorQuantCycles,
               curveSmoothness,
               pathOmit,
               simplificationLevel,
             });
             setSvgPreview(svg);
+            addLog('LIVELLI', `Livello "${layerToTrace.name}": generati ${pathCount} tracciati vettoriali SVG distinti`, 'success');
           }
         } else {
           // VETTORIALIZZAZIONE MULTI-LIVELLO SEPARATA:
           // Ogni livello viene vettorializzato INDIPENDENTEMENTE, preservando livelli, nomi, trasparenza e coordinate!
-          const multiVectorized: LayerItem[] = layers.map((layer) => {
+          let totalTracedPaths = 0;
+          const multiVectorized: LayerItem[] = layers.map((layer, idx) => {
             const { svg, pathCount } = vectorizeCanvas(layer.canvas, {
               numberOfColors,
+              colorQuantCycles,
               curveSmoothness,
               pathOmit,
               simplificationLevel,
             });
+            totalTracedPaths += pathCount;
+            addLog('LIVELLI', `Livello ${idx + 1}/${layers.length} "${layer.name}": ${pathCount} tracciati vettoriali generati`);
             return {
               ...layer,
               isVector: true,
@@ -143,9 +181,13 @@ export const VectorizeModal: React.FC<VectorizeModalProps> = ({
           setVectorizedLayers(multiVectorized);
           const combinedSvg = createMultiLayerSvg(settings.width, settings.height, multiVectorized);
           setSvgPreview(combinedSvg);
+          addLog('SUCCESSO', `Vettorializzazione multi-livello completata: ${multiVectorized.length} livelli separati, ${totalTracedPaths} tracciati totali pronti per Fresco!`, 'success');
         }
+        setVectorLogs(newLogs);
       } catch (err) {
         console.error('Vector trace failed:', err);
+        addLog('ERRORE', `Errore durante il ricalco vettoriale: ${String(err)}`, 'warn');
+        setVectorLogs(newLogs);
       } finally {
         setIsTracing(false);
       }
@@ -157,6 +199,7 @@ export const VectorizeModal: React.FC<VectorizeModalProps> = ({
     selectedLayerId,
     targetScope,
     numberOfColors,
+    colorQuantCycles,
     curveSmoothness,
     pathOmit,
     simplificationLevel,
@@ -400,13 +443,61 @@ export const VectorizeModal: React.FC<VectorizeModalProps> = ({
               </div>
             </div>
 
-            {/* Fine Tuning Controls */}
-            <div className="space-y-3 bg-slate-800/40 p-3 rounded-xl border border-slate-700/50">
-              {/* Number of colors */}
+            {/* Color Quantization (Quantizzazione Colori) */}
+            <div className="bg-slate-850/80 p-3 rounded-xl border border-amber-500/30 space-y-3 bg-gradient-to-b from-slate-800/60 to-slate-900/60 shadow-inner">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-2">
+                  <Palette className="w-4 h-4 text-amber-400" />
+                  <span className="font-semibold text-white text-xs">Quantizzazione Colori (Color Quantization)</span>
+                </div>
+                <span className="text-[10px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 px-2 py-0.5 rounded-full">
+                  {quantInfo.label} • {quantInfo.fileEfficiency}
+                </span>
+              </div>
+
+              {/* Quick Quantization Tiers: 2, 4, 8, 16, 32 */}
               <div>
-                <div className="flex justify-between items-center mb-1">
-                  <span className="font-medium text-slate-300">Numero di Colori Tracciati</span>
-                  <span className="font-mono text-rose-400 font-bold">{numberOfColors}</span>
+                <div className="flex justify-between items-center text-[11px] mb-1.5">
+                  <span className="text-slate-300 font-medium">Numero Colori Massimi:</span>
+                  <span className="text-[10px] text-amber-400 font-semibold">{quantInfo.sublabel}</span>
+                </div>
+                <div className="grid grid-cols-5 gap-1.5">
+                  {QUANTIZATION_TIERS.map((tier) => {
+                    const info = getQuantizationTierInfo(tier);
+                    const isSelected = numberOfColors === tier;
+                    return (
+                      <button
+                        key={tier}
+                        type="button"
+                        onClick={() => setNumberOfColors(tier)}
+                        className={`py-2 px-1 rounded-lg border text-center transition cursor-pointer flex flex-col items-center justify-center ${
+                          isSelected
+                            ? 'bg-gradient-to-b from-amber-500/30 to-amber-600/20 border-amber-400 text-white shadow-sm ring-1 ring-amber-400/50'
+                            : 'bg-slate-900/80 border-slate-700/80 text-slate-300 hover:border-slate-500 hover:text-white'
+                        }`}
+                      >
+                        <span className={`text-xs font-bold font-mono ${isSelected ? 'text-amber-300' : 'text-slate-200'}`}>
+                          {tier}
+                        </span>
+                        <span className="text-[9px] text-slate-400 mt-0.5 font-medium leading-tight line-clamp-1">
+                          {tier === 2 ? 'Mono' : tier === 4 ? 'Retro' : tier === 8 ? 'Pop' : tier === 16 ? 'Fresco' : 'HD'}
+                        </span>
+                        <span className={`text-[8px] font-mono mt-0.5 px-1 py-0.2 rounded ${
+                          isSelected ? 'bg-amber-400/20 text-amber-200' : 'bg-slate-800 text-slate-400'
+                        }`}>
+                          {info.fileEfficiency.split(' ')[0]}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Slider for fine continuous control */}
+              <div>
+                <div className="flex justify-between items-center text-[11px] mb-1">
+                  <span className="text-slate-300">Regolazione Fine Colori (2 - 32):</span>
+                  <span className="font-mono text-amber-400 font-bold">{numberOfColors} colori</span>
                 </div>
                 <input
                   type="range"
@@ -414,11 +505,73 @@ export const VectorizeModal: React.FC<VectorizeModalProps> = ({
                   max="32"
                   value={numberOfColors}
                   onChange={(e) => setNumberOfColors(Number(e.target.value))}
-                  className="w-full accent-rose-500 cursor-pointer"
+                  className="w-full accent-amber-500 cursor-pointer h-1.5 bg-slate-700 rounded-lg appearance-none"
                 />
+                <div className="flex justify-between text-[9px] text-slate-400 mt-1 font-mono">
+                  <span>2 (Silhouette)</span>
+                  <span>8 (Sticker)</span>
+                  <span>16 (Fresco)</span>
+                  <span>32 (HD)</span>
+                </div>
               </div>
 
-              {/* Curve Smoothness */}
+              {/* Clustering Quality / K-Means Quantization Cycles */}
+              <div>
+                <div className="flex items-center justify-between text-[11px] mb-1">
+                  <span className="text-slate-300">Precisione Campionamento Palette:</span>
+                  <span className="text-[10px] text-slate-400 font-mono">
+                    {colorQuantCycles === 1 ? '1x (Veloce)' : colorQuantCycles === 3 ? '3x (Bilanciato)' : '5x (Profondo)'}
+                  </span>
+                </div>
+                <div className="grid grid-cols-3 gap-1">
+                  {[
+                    { cycles: 1, label: 'Veloce 1x' },
+                    { cycles: 3, label: 'Bilanciato 3x' },
+                    { cycles: 5, label: 'Profondo 5x' },
+                  ].map((c) => (
+                    <button
+                      key={c.cycles}
+                      type="button"
+                      onClick={() => setColorQuantCycles(c.cycles)}
+                      className={`py-1 text-center rounded text-[11px] font-medium transition cursor-pointer ${
+                        colorQuantCycles === c.cycles
+                          ? 'bg-amber-500 text-slate-950 font-bold'
+                          : 'bg-slate-900 border border-slate-700/60 text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      {c.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Extracted Swatches Visualizer */}
+              {extractedPalette.length > 0 && (
+                <div>
+                  <div className="flex justify-between items-center text-[10px] text-slate-400 mb-1.5">
+                    <span>Palette Quantizzata Ricalcata ({extractedPalette.length} campioni):</span>
+                  </div>
+                  <div className="flex flex-wrap gap-1 p-1.5 rounded-lg bg-slate-900/90 border border-slate-700/60 max-h-16 overflow-y-auto">
+                    {extractedPalette.map((color, idx) => (
+                      <div
+                        key={idx}
+                        className="w-4 h-4 rounded-full border border-white/20 shadow-xs flex-shrink-0 transition transform hover:scale-125"
+                        style={{ backgroundColor: color }}
+                        title={`Colore ${idx + 1}: ${color}`}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Quantization tier note */}
+              <p className="text-[10px] text-slate-400 italic leading-snug">
+                {quantInfo.description}
+              </p>
+            </div>
+
+            {/* Curve Smoothness & Path Noise Filter */}
+            <div className="space-y-3 bg-slate-800/40 p-3 rounded-xl border border-slate-700/50">
               <div>
                 <label className="font-medium text-slate-300 block mb-1">Lisciatura Curve</label>
                 <div className="grid grid-cols-3 gap-1">
@@ -486,6 +639,80 @@ export const VectorizeModal: React.FC<VectorizeModalProps> = ({
                     className="max-w-full max-h-[340px] object-contain drop-shadow-md"
                   />
                 )
+              )}
+            </div>
+
+            {/* Diagnostic Log Terminal for Vectorization ("metti log") */}
+            <div className="w-full mt-3 border border-slate-800 rounded-xl bg-slate-900/90 overflow-hidden text-xs">
+              <div className="px-3 py-1.5 bg-slate-850 flex items-center justify-between border-b border-slate-800">
+                <div className="flex items-center gap-2">
+                  <Terminal className="w-3.5 h-3.5 text-rose-400" />
+                  <span className="font-semibold text-slate-200 text-[11px]">Log di Vettorializzazione</span>
+                  <span className="text-[10px] px-1.5 py-0.2 rounded bg-slate-800 text-slate-400 font-mono">
+                    {vectorLogs.length} eventi
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const text = vectorLogs.map((l) => `[${l.timestamp}] [${l.category}] ${l.message}`).join('\n');
+                      navigator.clipboard.writeText(text).then(() => {
+                        setCopyFeedback(true);
+                        setTimeout(() => setCopyFeedback(false), 2000);
+                      });
+                    }}
+                    className="flex items-center gap-1 px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] transition cursor-pointer"
+                  >
+                    {copyFeedback ? (
+                      <>
+                        <Check className="w-3 h-3 text-emerald-400" />
+                        <span className="text-emerald-400 font-semibold">Copiato!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3 h-3" />
+                        <span>Copia Log</span>
+                      </>
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setIsLogOpen(!isLogOpen)}
+                    className="p-1 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer"
+                    title={isLogOpen ? 'Riduci terminale' : 'Espandi log'}
+                  >
+                    {isLogOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronUp className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+              </div>
+
+              {isLogOpen && (
+                <div className="max-h-28 overflow-y-auto p-2 font-mono text-[10px] space-y-1 bg-black/60 select-text">
+                  {vectorLogs.length === 0 ? (
+                    <div className="text-slate-500 italic">Nessun evento registrato...</div>
+                  ) : (
+                    vectorLogs.map((vl, idx) => (
+                      <div key={idx} className="flex items-start gap-1.5">
+                        <span className="text-slate-500 shrink-0">{vl.timestamp}</span>
+                        <span className="text-rose-400 font-semibold shrink-0">[{vl.category}]</span>
+                        <span
+                          className={
+                            vl.level === 'success'
+                              ? 'text-emerald-300 font-medium'
+                              : vl.level === 'warn'
+                              ? 'text-amber-300'
+                              : 'text-slate-300'
+                          }
+                        >
+                          {vl.message}
+                        </span>
+                      </div>
+                    ))
+                  )}
+                </div>
               )}
             </div>
 
