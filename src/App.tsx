@@ -31,6 +31,7 @@ import {
   generateSampleStickerSheet,
 } from './utils/canvasHelpers';
 import { generateWarriorSampleCanvas } from './utils/characterPrototypes';
+import { preserveSemanticLayerEdits } from './utils/semanticSegmentation';
 import {
   readDraft,
   writeDraft,
@@ -167,7 +168,8 @@ function Welcome({
           <span>Tutti i tuoi livelli.</span>
         </h1>
         <p>
-          Separa i tuoi elementi e portali in Adobe Fresco con separazione anatomica (tratto, accessori, occhi, capelli, pelle, vestiti).
+          Separa i tuoi elementi e portali in Adobe Fresco con separazione
+          anatomica (tratto, accessori, occhi, capelli, pelle, vestiti).
           <br className="desktop-break" /> Il tuo prossimo progetto inizia qui.
         </p>
       </div>
@@ -198,7 +200,10 @@ function Welcome({
           </div>
         </section>
 
-        <div className="sample-cards-column" style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+        <div
+          className="sample-cards-column"
+          style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}
+        >
           {/* Character Demo Card */}
           <button
             className="sample-card"
@@ -208,9 +213,21 @@ function Welcome({
           >
             <div className="sample-card-top" style={{ padding: '12px 18px' }}>
               <span>SEPARAZIONE ANATOMICA</span>
-              <span className="sample-tag" style={{ background: '#ede9fe', borderColor: '#c4b5fd', color: '#6d28d9' }}>AI FREE TIER</span>
+              <span
+                className="sample-tag"
+                style={{
+                  background: '#ede9fe',
+                  borderColor: '#c4b5fd',
+                  color: '#6d28d9',
+                }}
+              >
+                AI FREE TIER
+              </span>
             </div>
-            <div className="sample-card-bottom" style={{ padding: '14px 18px', marginTop: 'auto' }}>
+            <div
+              className="sample-card-bottom"
+              style={{ padding: '14px 18px', marginTop: 'auto' }}
+            >
               <div>
                 <strong>Guerriero con Spada</strong>
                 <span>Isola spada, capelli, pelle, occhi e vestiti.</span>
@@ -232,7 +249,10 @@ function Welcome({
               <span>OGGETTI SEPARATI</span>
               <span className="sample-tag">STICKER</span>
             </div>
-            <div className="sample-card-bottom" style={{ padding: '14px 18px', marginTop: 'auto' }}>
+            <div
+              className="sample-card-bottom"
+              style={{ padding: '14px 18px', marginTop: 'auto' }}
+            >
               <div>
                 <strong>Sticker Botanici</strong>
                 <span>Quattro elementi distanziati su trasparente.</span>
@@ -247,7 +267,7 @@ function Welcome({
       <div className="welcome-foot">
         <span>
           <ShieldCheck size={17} />
-          Le immagini restano nel tuo browser.
+          Progetti locali. Analisi AI solo con consenso.
         </span>
         <span>
           <CheckCheck size={17} />
@@ -546,6 +566,10 @@ export default function App() {
         x: Math.min(p.settings.width - 16, l.x + 20),
         y: Math.min(p.settings.height - 16, l.y + 20),
         locked: false,
+        semanticGroupId: undefined,
+        semanticRole: undefined,
+        semanticLeft: undefined,
+        semanticTop: undefined,
       };
       const idx = p.layers.indexOf(l),
         layers = [...p.layers];
@@ -595,6 +619,13 @@ export default function App() {
   }
   const active = project?.layers.find((l) => l.id === project.activeLayerId);
   const canExtract = !!active && !active.locked && active.visible;
+  const semanticGroup = active?.semanticGroupId
+    ? (project?.layers.filter(
+        (l) => l.semanticGroupId === active.semanticGroupId,
+      ) ?? [])
+    : [];
+  const extractionSource =
+    semanticGroup.find((l) => l.semanticRole === 'Originale') ?? active;
   return (
     <div
       className={`app ${project ? 'has-project' : ''}`}
@@ -929,17 +960,23 @@ export default function App() {
       )}
       {dialog === 'extract' && active && (
         <ExtractModal
-          layer={active}
+          layer={extractionSource!}
+          existingLayers={semanticGroup}
           onClose={() => setDialog(null)}
-          onApply={(layers) =>
-            safeCommit((p) => ({
+          onApply={(generated) => {
+            const layers = preserveSemanticLayerEdits(generated, semanticGroup);
+            return safeCommit((p) => ({
               ...p,
-              layers: p.layers.flatMap((l) =>
-                l.id === active.id ? layers : [l],
-              ),
+              layers: p.layers.flatMap((l) => {
+                if (active.semanticGroupId) {
+                  if (l.semanticGroupId !== active.semanticGroupId) return [l];
+                  return l.id === active.id ? layers : [];
+                }
+                return l.id === active.id ? layers : [l];
+              }),
               activeLayerId: layers[0]?.id ?? null,
-            }))
-          }
+            }));
+          }}
         />
       )}
       {dialog === 'export' && project && (

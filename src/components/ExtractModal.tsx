@@ -21,12 +21,12 @@ import type { ExtractionOptions, ExtractionResult } from '../utils/extraction';
 import { createCanvas, context, makeLayer } from '../utils/canvasHelpers';
 import { Modal } from './Modal';
 import { SemanticRefinementStudio } from './SemanticRefinementStudio';
-import type {
-  SemanticPart,
-  SemanticRefinementMask,
-} from '../utils/semanticSegmentation';
+import type { SemanticRefinementMask } from '../utils/semanticSegmentation';
 import {
   initializeSemanticRefinementMasks,
+  decodeSemanticParts,
+  validateSemanticParts,
+  restoreGroupMasks,
 } from '../utils/semanticSegmentation';
 import {
   generateWarriorSampleCanvas,
@@ -39,12 +39,15 @@ export function ExtractModal({
   layer,
   onClose,
   onApply,
+  existingLayers = [],
 }: {
   layer: LayerItem;
+  existingLayers?: LayerItem[];
   onClose: () => void;
   onApply: (layers: LayerItem[]) => boolean;
 }) {
-  const [selectedMode, setSelectedMode] = useState<CombinedExtractionMode>('semantic');
+  const [selectedMode, setSelectedMode] =
+    useState<CombinedExtractionMode>('semantic');
 
   // Options for objects & colors
   const [options, setOptions] = useState<ExtractionOptions>({
@@ -55,16 +58,13 @@ export function ExtractModal({
   });
 
   // Options for semantic AI separation
-  const [modelId, setModelId] = useState('gemini-3.8-flash');
-  const [consent, setConsent] = useState(true);
+  const [modelId, setModelId] = useState('gemini-3.5-flash-lite');
+  const [consent, setConsent] = useState(false);
   const [useMockDemo, setUseMockDemo] = useState(false);
-  const [userApiKey, setUserApiKey] = useState(() => {
-    try {
-      return localStorage.getItem('fresco_gemini_key') || '';
-    } catch {
-      return '';
-    }
-  });
+  const [userApiKey, setUserApiKey] = useState('');
+  const [prototypeType, setPrototypeType] = useState<'warrior' | 'mage' | null>(
+    null,
+  );
   const [showKeyField, setShowKeyField] = useState(false);
   const [workingLayer, setWorkingLayer] = useState<LayerItem>(layer);
 
@@ -82,13 +82,27 @@ export function ExtractModal({
     masks: SemanticRefinementMask[];
     isMock: boolean;
     modelUsed: string;
-  } | null>(null);
+    warning?: string;
+  } | null>(() =>
+    existingLayers.length
+      ? {
+          masks: restoreGroupMasks(layer, existingLayers),
+          isMock: false,
+          modelUsed: 'Livelli esistenti',
+        }
+      : null,
+  );
 
+  const request = useRef<AbortController | null>(null);
   const worker = useRef<Worker | null>(null);
   const timer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
+    try {
+      localStorage.removeItem('fresco_gemini_key');
+    } catch {}
     return () => {
+      request.current?.abort();
       worker.current?.terminate();
       clearTimeout(timer.current);
     };
@@ -112,6 +126,8 @@ export function ExtractModal({
     newLayer.width = workingLayer.width;
     newLayer.height = workingLayer.height;
     setWorkingLayer(newLayer);
+    setPrototypeType(type);
+    setUseMockDemo(true);
     setError('');
     setClassicResult(null);
     setSemanticStudioData(null);
@@ -126,20 +142,12 @@ export function ExtractModal({
       const canvas = workingLayer.canvas;
       const base64 = canvas.toDataURL('image/png');
 
-      const isWarrior = workingLayer.name.toLowerCase().includes('guerriero');
-      const isMage = workingLayer.name.toLowerCase().includes('maga');
-      const demoType = isMage ? 'mage' : isWarrior ? 'warrior' : undefined;
-
-      try {
-        if (userApiKey) {
-          localStorage.setItem('fresco_gemini_key', userApiKey.trim());
-        }
-      } catch {
-        // ignore
-      }
-
+      const demoType = prototypeType;
+      const controller = new AbortController();
+      request.current = controller;
       const res = await fetch('/api/segment-semantic', {
         method: 'POST',
+        signal: controller.signal,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           image: base64,
@@ -154,10 +162,23 @@ export function ExtractModal({
       const data = await res.json();
 
       if (!res.ok) {
-        throw new Error(data.error || 'Errore durante la separazione semantica.');
+        throw new Error(
+          data.error || 'Errore durante la separazione semantica.',
+        );
       }
 
-      const parts: SemanticPart[] = data.parts || [];
+      if (data.isMock && (!useMockDemo || !prototypeType))
+        throw new Error(
+          'Il server ha restituito sagome di prova per una foto. Il risultato non è stato applicato.',
+        );
+      const parts = await decodeSemanticParts(
+        validateSemanticParts(
+          data.parts,
+          !data.isMock && data.maskFormat !== 'polygons',
+        ),
+        canvas.width,
+        canvas.height,
+      );
       if (!parts.length) {
         throw new Error(
           'Nessuna componente anatomica identificata con certezza. Prova a regolare i contorni o seleziona un’altra modalità.',
@@ -177,13 +198,35 @@ export function ExtractModal({
         masks,
         isMock: Boolean(data.isMock),
         modelUsed: data.modelUsed || modelId,
+        warning:
+          Number.isInteger(data.discardedParts) && data.discardedParts > 0
+            ? `${data.discardedParts} contorni non validi scartati. Controlla “Da assegnare” e correggi le parti.`
+            : undefined,
       });
     } catch (err: unknown) {
+      if (request.current?.signal.aborted) return;
       const msg = err instanceof Error ? err.message : String(err);
       setError(msg);
     } finally {
       setBusy(false);
     }
+  }
+
+  function refineManually() {
+    request.current?.abort();
+    const c = workingLayer.canvas;
+    const masks = initializeSemanticRefinementMasks(
+      context(c).getImageData(0, 0, c.width, c.height).data,
+      c.width,
+      c.height,
+      [],
+    );
+    setSemanticStudioData({
+      masks,
+      isMock: false,
+      modelUsed: 'Rifinitura manuale',
+    });
+    setError('');
   }
 
   // Run classic worker (objects or colors)
@@ -284,12 +327,13 @@ export function ExtractModal({
   // If semantic refinement studio is open, render it inside the modal
   if (semanticStudioData) {
     return (
-      <Modal title="Rifinitura Livelli Fresco (Touch & Apple Pencil)" onClose={onClose} wide>
+      <Modal title="Rifinisci le selezioni" onClose={onClose} wide full>
         <SemanticRefinementStudio
           sourceLayer={workingLayer}
           initialMasks={semanticStudioData.masks}
           isMock={semanticStudioData.isMock}
           modelUsed={semanticStudioData.modelUsed}
+          warning={semanticStudioData.warning}
           onApply={(generatedLayers) => {
             if (onApply(generatedLayers)) {
               onClose();
@@ -304,7 +348,8 @@ export function ExtractModal({
   return (
     <Modal title="Separa in livelli" onClose={onClose} wide>
       <p className="modal-intro">
-        Lavora su <strong>{workingLayer.name}</strong>. Gli altri livelli restano al loro posto.
+        Lavora su <strong>{workingLayer.name}</strong>. Gli altri livelli
+        restano al loro posto.
       </p>
 
       {!classicResult ? (
@@ -360,11 +405,11 @@ export function ExtractModal({
           {/* Mode-specific settings */}
           {selectedMode === 'semantic' ? (
             <div className="semantic-options-container">
-              {/* Prototipi veloci */}
+              {/* Explicit geometric examples; never a fallback for uploaded photos. */}
               <div className="prototype-strip">
                 <span className="strip-title">
                   <User size={14} />
-                  Prototipi dimostrativi inclusi:
+                  Esempi geometrici (senza AI):
                 </span>
                 <div className="prototype-buttons">
                   <button
@@ -373,7 +418,7 @@ export function ExtractModal({
                     disabled={busy}
                     onClick={() => loadPrototype('warrior')}
                   >
-                    Guerriero con Spada (Foto Utente)
+                    Carica esempio guerriero
                   </button>
                   <button
                     type="button"
@@ -382,7 +427,7 @@ export function ExtractModal({
                     onClick={() => loadPrototype('mage')}
                   >
                     <Wand2 size={13} />
-                    Maga Anime con Bacchetta
+                    Carica esempio maga
                   </button>
                 </div>
               </div>
@@ -396,9 +441,10 @@ export function ExtractModal({
                     disabled={busy}
                     onChange={(e) => setModelId(e.target.value)}
                   >
-                    <option value="gemini-3.8-flash">gemini-3.8-flash (Consigliato Free Tier)</option>
-                    <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite</option>
-                    <option value="gemini-flash-latest">gemini-flash-latest</option>
+                    <option value="gemini-3.8-flash">gemini-3.8-flash</option>
+                    <option value="gemini-3.5-flash-lite">
+                      gemini-3.5-flash-lite
+                    </option>
                   </select>
                 </label>
 
@@ -408,10 +454,10 @@ export function ExtractModal({
                     <input
                       type="checkbox"
                       checked={useMockDemo}
-                      disabled={busy}
+                      disabled={busy || !prototypeType}
                       onChange={(e) => setUseMockDemo(e.target.checked)}
                     />
-                    <span>Test dimostrativo offline (dichiarato)</span>
+                    <span>Usa le sagome dell’esempio caricato</span>
                   </label>
                 </div>
               </div>
@@ -430,11 +476,16 @@ export function ExtractModal({
                 {showKeyField && (
                   <div className="key-input-container">
                     <p className="note-text">
-                      L'app usa automaticamente la chiave <strong>Google AI Free Tier</strong> dell'ambiente con modello <code>gemini-3.8-flash</code> (quota gratuita, zero billing). Se desideri usare la quota del tuo account Google AI Studio, incolla qui la tua API Key personale:
+                      Usa la chiave configurata sul server oppure inserisci una
+                      chiave per questa sessione. Non viene salvata nel browser.
+                      Il piano e le quote dipendono dal tuo progetto Google AI
+                      Studio.
                     </p>
                     <input
                       type="password"
-                      placeholder="Incolla API Key Google AI (es. AIzaSy...)"
+                      aria-label="Chiave Google per questa sessione"
+                      autoComplete="off"
+                      placeholder="Chiave API Google"
                       value={userApiKey}
                       disabled={busy}
                       onChange={(e) => setUserApiKey(e.target.value)}
@@ -455,15 +506,20 @@ export function ExtractModal({
                 <span className="consent-text">
                   <ShieldCheck size={16} />
                   <span>
-                    <strong>Consenso Google AI Free Tier:</strong> accetto l'invio
-                    dell'immagine ai server Google per l'elaborazione multimodale
-                    secondo i termini del piano gratuito. Nessun billing o costo.
+                    <strong>Consenso Google AI Free Tier:</strong> accetto
+                    l'invio dell’immagine a Google per l’analisi, secondo i
+                    termini e le quote del mio account. Nel piano gratuito i
+                    dati possono essere usati da Google per migliorare i propri
+                    prodotti.
                   </span>
                 </span>
               </label>
 
               <div className="note">
-                <strong>9 Livelli Adobe Fresco generati:</strong> 1. Tratto / Lineart · 2. Accessori (spada/gioielli) · 3. Occhi · 4. Bocca · 5. Capelli · 6. Pelle (viso, orecchie, collo) · 7. Vestiti · 8. Sfondo · 9. Originale nascosto per recupero non distruttivo. Potrai rifinire ogni maschera con Apple Pencil prima di applicarla!
+                <strong>Controlla le selezioni prima di applicarle.</strong> I
+                pixel non riconosciuti restano in “Da assegnare”. L’originale
+                viene conservato nascosto. Le risposte di esempio funzionano
+                solo sulle figure geometriche caricate qui.
               </div>
             </div>
           ) : (
@@ -477,7 +533,8 @@ export function ExtractModal({
                     onChange={(e) =>
                       setOptions((o) => ({
                         ...o,
-                        background: e.target.value as ExtractionOptions['background'],
+                        background: e.target
+                          .value as ExtractionOptions['background'],
                       }))
                     }
                   >
@@ -578,6 +635,17 @@ export function ExtractModal({
         </>
       )}
 
+      {selectedMode === 'semantic' && !classicResult && (
+        <button
+          type="button"
+          className="button secondary"
+          disabled={busy}
+          onClick={refineManually}
+        >
+          Seleziona le parti a mano
+        </button>
+      )}
+
       {error && (
         <div className="inline-error" role="alert">
           {error}
@@ -608,7 +676,9 @@ export function ExtractModal({
         <button
           type="button"
           className="button primary"
-          disabled={busy || (selectedMode === 'semantic' && !consent && !useMockDemo)}
+          disabled={
+            busy || (selectedMode === 'semantic' && !consent && !useMockDemo)
+          }
           onClick={() => {
             if (classicResult) {
               onApply(classicResult.layers) && onClose();

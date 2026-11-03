@@ -32,3 +32,6 @@ jobs:
       - run: npm run test:e2e
         env:
           TEST_BROWSER: ${{ matrix.browser }}
+      - run: npm run test:semantic
+        env:
+          TEST_BROWSER: ${{ matrix.browser }}

@@ -96,20 +96,19 @@ try {
   ).toBeVisible();
   await noOverflow();
   await page.screenshot({ path: `${artifacts}/welcome.png` });
-  await page
-    .getByLabel('Carica immagini', { exact: true })
-    .setInputFiles({
-      name: 'fake.png',
-      mimeType: 'image/png',
-      buffer: Buffer.from('<svg/>'),
-    });
+  await page.getByLabel('Carica immagini', { exact: true }).setInputFiles({
+    name: 'fake.png',
+    mimeType: 'image/png',
+    buffer: Buffer.from('<svg/>'),
+  });
   await expect(page.getByRole('alert')).toContainText(
     'contenuto non è un’immagine',
   );
   await choose('Chiudi messaggio');
-  await choose('Prova con un esempio');
+  await choose('Prova con sticker botanici');
   await count(1);
   await choose('Separa in livelli');
+  await page.getByRole('button', { name: /Oggetti separati/ }).click();
   await choose('Trova i livelli');
   await expect(
     page.getByText('4 livelli rilevati', { exact: true }),
