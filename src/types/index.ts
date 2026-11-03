@@ -1,22 +1,11 @@
-export type BlendMode = 
-  | 'normal'
-  | 'multiply'
-  | 'screen'
-  | 'overlay'
-  | 'darken'
-  | 'lighten'
-  | 'color dodge'
-  | 'color burn'
-  | 'hard light'
-  | 'soft light'
-  | 'difference'
-  | 'exclusion';
+export type BlendMode = 'normal' | 'multiply' | 'screen';
 
+// The first item is the topmost layer. Canvas pixels are immutable after creation.
 export interface LayerItem {
   id: string;
   name: string;
   visible: boolean;
-  opacity: number; // 0 to 1
+  opacity: number;
   blendMode: BlendMode;
   x: number;
   y: number;
@@ -24,10 +13,7 @@ export interface LayerItem {
   height: number;
   canvas: HTMLCanvasElement;
   previewUrl: string;
-  locked?: boolean;
-  isVector?: boolean;
-  svgContent?: string;
-  vectorPathsCount?: number;
+  locked: boolean;
 }
 
 export interface BoundingBox {
@@ -38,19 +24,24 @@ export interface BoundingBox {
   pixelCount: number;
 }
 
-export interface ExtractionSettings {
-  mode: 'alpha' | 'colorKey';
-  targetColor: { r: number; g: number; b: number };
-  tolerance: number; // 0 - 255
-  minPixelCount: number;
-  padding: number;
-}
-
 export interface ProjectSettings {
   name: string;
   width: number;
   height: number;
   dpi: number;
-  backgroundColor: 'transparent' | 'white' | 'black' | 'custom';
-  customBgColor?: string;
+  backgroundColor: 'transparent' | 'white';
 }
+
+export interface Project {
+  settings: ProjectSettings;
+  layers: LayerItem[];
+  activeLayerId: string | null;
+}
+
+export type Tool = 'move' | 'pan' | 'cut';
+export const MAX_EDGE = 2560;
+export const MAX_IMAGE_PIXELS = 4_000_000;
+export const MAX_PROJECT_PIXELS = 12_000_000;
+export const MAX_LAYERS = 32;
+export const MAX_FILE_BYTES = 30 * 1024 * 1024;
+export const MAX_PROJECT_FILE_BYTES = 64 * 1024 * 1024;
