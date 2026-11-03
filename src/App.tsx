@@ -30,6 +30,7 @@ import {
   cutLayer,
   generateSampleStickerSheet,
 } from './utils/canvasHelpers';
+import { generateWarriorSampleCanvas } from './utils/characterPrototypes';
 import {
   readDraft,
   writeDraft,
@@ -137,15 +138,23 @@ function Welcome({
 }: {
   onImport: () => void;
   onOpen: () => void;
-  onDemo: () => void;
+  onDemo: (type: 'stickers' | 'character') => void;
 }) {
-  const [sample] = useState(() => {
+  const [sampleStickers] = useState(() => {
     const canvas = generateSampleStickerSheet();
     const url = canvas.toDataURL();
     canvas.width = 1;
     canvas.height = 1;
     return url;
   });
+  const [sampleWarrior] = useState(() => {
+    const canvas = generateWarriorSampleCanvas();
+    const url = canvas.toDataURL();
+    canvas.width = 1;
+    canvas.height = 1;
+    return url;
+  });
+
   return (
     <main className="welcome">
       <div className="welcome-intro">
@@ -158,7 +167,7 @@ function Welcome({
           <span>Tutti i tuoi livelli.</span>
         </h1>
         <p>
-          Separa i tuoi elementi e portali in Adobe Fresco.
+          Separa i tuoi elementi e portali in Adobe Fresco con separazione anatomica (tratto, accessori, occhi, capelli, pelle, vestiti).
           <br className="desktop-break" /> Il tuo prossimo progetto inizia qui.
         </p>
       </div>
@@ -169,9 +178,9 @@ function Welcome({
           </div>
           <h2>Fai spazio alle tue idee.</h2>
           <p>
-            Scegli un’immagine o più file.
+            Scegli un’illustrazione o una foto.
             <br />
-            Ogni immagine diventa un livello.
+            Isola i tratti, gli accessori e le parti anatomiche.
           </p>
           <button className="button primary" onClick={onImport}>
             Carica immagini
@@ -188,36 +197,52 @@ function Welcome({
             </button>
           </div>
         </section>
-        <button
-          className="sample-card"
-          onClick={onDemo}
-          aria-label="Prova con un esempio"
-        >
-          <div className="sample-card-top">
-            <span>UN PICCOLO ASSAGGIO</span>
-            <span className="sample-tag">DEMO</span>
-          </div>
-          <div className="sample-art">
-            <div className="sample-paper">
-              <img
-                src={sample}
-                alt="Quattro sticker: arancia, fiore, foglie e cuore"
-              />
+
+        <div className="sample-cards-column" style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+          {/* Character Demo Card */}
+          <button
+            className="sample-card"
+            onClick={() => onDemo('character')}
+            aria-label="Prova con il Guerriero con Spada"
+            style={{ minHeight: '175px' }}
+          >
+            <div className="sample-card-top" style={{ padding: '12px 18px' }}>
+              <span>SEPARAZIONE ANATOMICA</span>
+              <span className="sample-tag" style={{ background: '#ede9fe', borderColor: '#c4b5fd', color: '#6d28d9' }}>AI FREE TIER</span>
             </div>
-            <div className="sample-layer-label">
-              <Layers size={15} />4 elementi, infinite idee.
+            <div className="sample-card-bottom" style={{ padding: '14px 18px', marginTop: 'auto' }}>
+              <div>
+                <strong>Guerriero con Spada</strong>
+                <span>Isola spada, capelli, pelle, occhi e vestiti.</span>
+              </div>
+              <span className="round-arrow">
+                <ArrowUpRight size={20} />
+              </span>
             </div>
-          </div>
-          <div className="sample-card-bottom">
-            <div>
-              <strong>Prova con un esempio</strong>
-              <span>Nessun file? Comincia da questi sticker.</span>
+          </button>
+
+          {/* Stickers Demo Card */}
+          <button
+            className="sample-card"
+            onClick={() => onDemo('stickers')}
+            aria-label="Prova con sticker botanici"
+            style={{ minHeight: '175px' }}
+          >
+            <div className="sample-card-top" style={{ padding: '12px 18px' }}>
+              <span>OGGETTI SEPARATI</span>
+              <span className="sample-tag">STICKER</span>
             </div>
-            <span className="round-arrow">
-              <ArrowUpRight size={23} />
-            </span>
-          </div>
-        </button>
+            <div className="sample-card-bottom" style={{ padding: '14px 18px', marginTop: 'auto' }}>
+              <div>
+                <strong>Sticker Botanici</strong>
+                <span>Quattro elementi distanziati su trasparente.</span>
+              </div>
+              <span className="round-arrow">
+                <ArrowUpRight size={20} />
+              </span>
+            </div>
+          </button>
+        </div>
       </div>
       <div className="welcome-foot">
         <span>
@@ -484,13 +509,17 @@ export default function App() {
       setBusy('');
     }
   }
-  function demo() {
+  function demo(type: 'stickers' | 'character' = 'stickers') {
     replace(() => {
-      const canvas = generateSampleStickerSheet(),
-        layer = makeLayer(canvas, 'Sticker botanici');
+      const isCharacter = type === 'character';
+      const canvas = isCharacter
+        ? generateWarriorSampleCanvas()
+        : generateSampleStickerSheet();
+      const name = isCharacter ? 'Guerriero con Spada' : 'Sticker botanici';
+      const layer = makeLayer(canvas, name);
       reset({
         settings: {
-          name: 'Piccole cose belle',
+          name: isCharacter ? 'Guerriero Fresco' : 'Piccole cose belle',
           width: canvas.width,
           height: canvas.height,
           dpi: 300,
@@ -501,7 +530,9 @@ export default function App() {
       });
       setTool('move');
       notify(
-        'Esempio pronto. Tocca “Separa in livelli” per isolare i quattro sticker.',
+        isCharacter
+          ? 'Personaggio caricato. Tocca “Separa in livelli” per isolare Tratto, Accessori, Occhi, Capelli, Pelle e Vestiti!'
+          : 'Esempio pronto. Tocca “Separa in livelli” per isolare i quattro sticker.',
       );
     });
   }

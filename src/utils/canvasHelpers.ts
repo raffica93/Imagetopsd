@@ -8,9 +8,50 @@ import {
 import type { LayerItem, Project } from '../types';
 
 export function createCanvas(width: number, height: number): HTMLCanvasElement {
+  const w = Math.max(1, Math.round(width));
+  const h = Math.max(1, Math.round(height));
+
+  if (typeof document === 'undefined') {
+    const buffer = new Uint8ClampedArray(w * h * 4);
+    const mockCtx: any = {
+      canvas: null,
+      fillStyle: '#000000',
+      strokeStyle: '#000000',
+      lineWidth: 1,
+      beginPath: () => {},
+      moveTo: () => {},
+      lineTo: () => {},
+      closePath: () => {},
+      fill: () => {},
+      stroke: () => {},
+      arc: () => {},
+      ellipse: () => {},
+      fillRect: () => {},
+      strokeRect: () => {},
+      clearRect: () => {},
+      quadraticCurveTo: () => {},
+      getImageData: () => ({ data: buffer, width: w, height: h }),
+      putImageData: () => {},
+      createImageData: (iw: number, ih: number) => ({
+        data: new Uint8ClampedArray(iw * ih * 4),
+        width: iw,
+        height: ih,
+      }),
+      drawImage: () => {},
+    };
+    const mockCanvas: any = {
+      width: w,
+      height: h,
+      getContext: () => mockCtx,
+      toDataURL: () => 'data:image/png;base64,mock',
+    };
+    mockCtx.canvas = mockCanvas;
+    return mockCanvas as HTMLCanvasElement;
+  }
+
   const canvas = document.createElement('canvas');
-  canvas.width = Math.max(1, Math.round(width));
-  canvas.height = Math.max(1, Math.round(height));
+  canvas.width = w;
+  canvas.height = h;
   return canvas;
 }
 

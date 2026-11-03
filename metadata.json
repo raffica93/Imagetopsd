@@ -1,5 +1,8 @@
 {
   "name": "FrescoLayers",
   "description": "MVP per iPad: importa immagini, separa elementi e colori, sistema i livelli ed esporta PSD a livelli pixel. Elaborazione e salvataggio locale nel browser.",
-  "requestFramePermissions": []
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }
