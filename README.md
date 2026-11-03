@@ -63,6 +63,12 @@ NODE_ENV=production npm start
 
 Express serve `dist/` e `/api/segment-semantic` sulla stessa origine. Consenti al proxy dell’hosting richieste di almeno 24 MB e tempi di risposta di almeno 100 secondi. `npm run preview` o un hosting di soli file statici servono il frontend ma **non forniscono l’API Gemini**; gli strumenti manuali e le modalità classiche rimangono utilizzabili.
 
+## Hosting Sites
+
+Il sito esistente è dichiarato in `.openai/hosting.json`. `npm run build:site` prepara un Worker autonomo in `build/site/`: include gli stessi asset Vite e l’API di analisi, senza richiedere un server Express persistente. La logica di riconoscimento è condivisa con la versione Node; le variabili `GEMINI_API_KEY` e `GEMINI_MODEL` vengono lette dalle binding del Worker. La chiave di sessione continua a funzionare senza configurare segreti permanenti.
+
+`node tests/worker-bundle.mjs` controlla il pacchetto e le due fasi dell’API con risposte Google sintetiche. Per verificare il pacchetto nel browser usa `node scripts/preview-site.mjs` e `TEST_BASE_URL=http://127.0.0.1:4177` negli script browser. La pubblicazione va eseguita tramite Sites sul progetto già esistente, preservandone gli accessi.
+
 ## Verifica
 
 ```sh

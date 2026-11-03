@@ -18,6 +18,10 @@ export type SemanticTask =
   | { stage: 'legacy' }
   | { stage: 'identify' }
   | { stage: 'segment-part'; inventory: SemanticInventory; part: DetectedPart };
+export interface SemanticEnvironment {
+  GEMINI_API_KEY?: string;
+  GEMINI_MODEL?: string;
+}
 
 export const ALLOWED_MODELS = ['gemini-3.8-flash', 'gemini-3.5-flash-lite'];
 export const SEGMENT_PROMPT = `Trace the actual VISIBLE contours of the parts of this character illustration. Use these exact labels: Capelli (all scalp hair and long side strands, NOT eyebrows), Pelle (whole face, ears and exposed skin/neck), Occhi (eyes), Bocca (mouth and lips), Vestiti (clothing), Accessori (earrings, hair ties and small objects), Sfondo (outside the character).
@@ -109,6 +113,9 @@ export function createSemanticHandler(
     signal: AbortSignal,
     task: SemanticTask,
   ) => Promise<string>,
+  environment: SemanticEnvironment = typeof process === 'undefined'
+    ? {}
+    : process.env,
 ) {
   const generate =
     infer ??
@@ -142,7 +149,7 @@ export function createSemanticHandler(
     const { image, consent, useMockDemo, demoType, userApiKey } =
       req.body ?? {};
     const model =
-      process.env.GEMINI_MODEL ?? req.body?.modelId ?? 'gemini-3.5-flash-lite';
+      environment.GEMINI_MODEL ?? req.body?.modelId ?? 'gemini-3.5-flash-lite';
     if (useMockDemo === true) {
       if (!['warrior', 'mage'].includes(demoType))
         return res.status(400).json({
@@ -197,7 +204,7 @@ export function createSemanticHandler(
     const key =
       (typeof userApiKey === 'string' && userApiKey.length < 512
         ? userApiKey.trim()
-        : '') || process.env.GEMINI_API_KEY;
+        : '') || environment.GEMINI_API_KEY;
     if (!key)
       return res.status(503).json({
         error:
