@@ -1,4 +1,10 @@
-import type { Project, ProjectSettings, BlendMode } from '../types';
+import type {
+  Project,
+  ProjectSettings,
+  BlendMode,
+  SemanticMetadata,
+} from '../types';
+import { isSemanticLabel, validateSemanticInventory } from './semanticProtocol';
 import {
   MAX_EDGE,
   MAX_IMAGE_PIXELS,
@@ -14,7 +20,7 @@ import {
   validateBudget,
 } from './canvasHelpers';
 
-interface StoredLayer {
+interface StoredLayer extends SemanticMetadata {
   name: string;
   x: number;
   y: number;
@@ -52,6 +58,11 @@ export async function serializeProject(
       pixelWidth: l.canvas.width,
       pixelHeight: l.canvas.height,
       image: await canvasBlob(l.canvas),
+      semanticGroupId: l.semanticGroupId,
+      semanticRole: l.semanticRole,
+      semanticLeft: l.semanticLeft,
+      semanticTop: l.semanticTop,
+      semanticInventory: l.semanticInventory,
     });
   return { version: 1, settings: project.settings, layers };
 }
@@ -86,6 +97,20 @@ export function validateStoredProject(
     throw new Error('Impostazioni del progetto non valide.');
   let pixelCount = 0;
   for (const l of p.layers) {
+    if (!l) throw new Error('Livello del progetto non valido.');
+    if (
+      l.semanticGroupId !== undefined &&
+      (typeof l.semanticGroupId !== 'string' ||
+        !l.semanticGroupId ||
+        l.semanticGroupId.length > 100 ||
+        typeof l.semanticRole !== 'string' ||
+        !(l.semanticRole === 'Originale' || isSemanticLabel(l.semanticRole)) ||
+        !finite(l.semanticLeft, 0, MAX_EDGE) ||
+        !finite(l.semanticTop, 0, MAX_EDGE))
+    )
+      throw new Error('Metadati dei livelli semantici non validi.');
+    if (l.semanticInventory !== undefined)
+      validateSemanticInventory(l.semanticInventory);
     if (
       !l ||
       typeof l.name !== 'string' ||
@@ -130,6 +155,11 @@ export async function deserializeProject(
       locked: l.locked,
       opacity: l.opacity,
       blendMode: l.blendMode,
+      semanticGroupId: l.semanticGroupId,
+      semanticRole: l.semanticRole,
+      semanticLeft: l.semanticLeft,
+      semanticTop: l.semanticTop,
+      semanticInventory: l.semanticInventory,
     });
   }
   validateBudget(layers);

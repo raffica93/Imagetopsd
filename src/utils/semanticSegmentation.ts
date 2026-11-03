@@ -1,448 +1,772 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
-
+/** @license SPDX-License-Identifier: Apache-2.0 */
 import type { LayerItem } from '../types';
-import { createCanvas, context, makeLayer } from './canvasHelpers';
-
-export type SemanticLabel =
-  | 'Tratto'
-  | 'Accessori'
-  | 'Occhi'
-  | 'Bocca'
-  | 'Capelli'
-  | 'Pelle'
-  | 'Vestiti'
-  | 'Sfondo';
-
-export interface SemanticPart {
-  id: string;
-  label: SemanticLabel;
-  box_2d: [number, number, number, number]; // [ymin, xmin, ymax, xmax] in 0-1000
-  polygon: [number, number][]; // [[y, x], ...] in 0-1000
-  confidence: number;
-  description?: string;
-}
+import { MAX_IMAGE_PIXELS } from '../types';
+import { createCanvas, context, makeLayer, loadImage } from './canvasHelpers';
+import { SEMANTIC_LABELS, isSemanticLabel } from './semanticProtocol';
+import type {
+  SemanticLabel,
+  SemanticPart,
+  SemanticInventory,
+  DetectedPart,
+} from './semanticProtocol';
+export type { SemanticLabel, SemanticPart } from './semanticProtocol';
+export { validateSemanticParts } from './semanticProtocol';
 
 export interface SemanticRefinementMask {
   partId: string;
   label: SemanticLabel;
   name: string;
   colorHex: string;
-  // Binary mask over full canvas: 1 = included, 0 = not included
   mask: Uint8Array;
   pixelCount: number;
 }
-
-export const SEMANTIC_HIERARCHY: Array<{
+export interface MaskDefinition {
   label: SemanticLabel;
   defaultName: string;
   colorHex: string;
   description: string;
-}> = [
+}
+export const SEMANTIC_HIERARCHY: MaskDefinition[] = [
   {
     label: 'Tratto',
     defaultName: 'Tratto / Contorni (Lineart)',
-    colorHex: '#1f2937',
-    description: 'Tratto a china e contorni neri/scuri isolati con filtro di contrasto',
+    colorHex: '#455468',
+    description: 'Segni scuri con contrasto locale, escluso lo sfondo',
   },
   {
     label: 'Accessori',
     defaultName: 'Accessori & Dettagli',
     colorHex: '#a855f7',
-    description: 'Armi, orecchini, gioielli, fibbie, cinture e oggetti impugnati',
+    description: 'Orecchini, gioielli e altri oggetti',
   },
   {
     label: 'Occhi',
     defaultName: 'Occhi',
     colorHex: '#06b6d4',
-    description: 'Iridi, riflessi, pupille, bulbi oculari e ciglia',
+    description: 'Le parti visibili degli occhi',
   },
   {
     label: 'Bocca',
     defaultName: 'Bocca',
     colorHex: '#f43f5e',
-    description: 'Labbra, denti e interno della bocca',
+    description: 'Labbra e interno della bocca',
   },
   {
     label: 'Capelli',
     defaultName: 'Capelli',
     colorHex: '#f97316',
-    description: 'Capigliatura, frangia, ciocche laterali lunghe e volume',
+    description: 'Capelli, frangia e ciocche',
   },
   {
     label: 'Pelle',
     defaultName: 'Pelle (Viso, Orecchie, Collo)',
     colorHex: '#eab308',
-    description: 'Incarnato di viso, orecchie, collo e braccia/mani esposte',
+    description: 'Pelle visibile',
   },
   {
     label: 'Vestiti',
     defaultName: 'Vestiti & Abiti',
     colorHex: '#10b981',
-    description: 'Tunica, camicia, mantello, colletti e indumenti del personaggio',
+    description: 'Indumenti',
   },
   {
     label: 'Sfondo',
     defaultName: 'Sfondo',
     colorHex: '#64748b',
-    description: 'Sfondo o scenario retrostante il personaggio',
+    description: 'Sfondo dell’immagine',
+  },
+  {
+    label: 'Da assegnare',
+    defaultName: 'Da assegnare',
+    colorHex: '#dc46a5',
+    description: 'Pixel conservati che l’AI non ha assegnato: correggili qui',
   },
 ];
+export const UNASSIGNED = SEMANTIC_LABELS.indexOf('Da assegnare');
+export const EMPTY_PIXEL = 255;
+const indexOf = (label: SemanticLabel, definitions = SEMANTIC_HIERARCHY) =>
+  definitions.findIndex((d) => d.label === label);
+export function definitionsFromInventory(
+  inventory: SemanticInventory,
+): MaskDefinition[] {
+  const colors = [
+    '#a855f7',
+    '#06b6d4',
+    '#f43f5e',
+    '#f97316',
+    '#eab308',
+    '#10b981',
+    '#6366f1',
+    '#d946ef',
+  ];
+  return [
+    SEMANTIC_HIERARCHY[0],
+    ...inventory.parts.map((part, i) => ({
+      label: part.id,
+      defaultName: part.name,
+      colorHex: colors[i % colors.length],
+      description: part.description,
+    })),
+    ...SEMANTIC_HIERARCHY.slice(-2),
+  ];
+}
+export function definitionsFromMasks(
+  masks: SemanticRefinementMask[],
+): MaskDefinition[] {
+  return masks.map((m) => ({
+    label: m.label,
+    defaultName: m.name,
+    colorHex: m.colorHex,
+    description: '',
+  }));
+}
+export const displayPartName = (definition: MaskDefinition) =>
+  definition.label.startsWith('part:')
+    ? definition.defaultName
+    : definition.label;
 
-/**
- * Checks if a point (x, y) is inside a polygon using ray-casting algorithm.
- */
-export function isPointInPolygon(x: number, y: number, polygon: [number, number][]): boolean {
+export interface CropBounds {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+export function partCropBounds(
+  part: DetectedPart,
+  width: number,
+  height: number,
+): CropBounds {
+  const [y0, x0, y1, x1] = part.box_2d;
+  const padX = Math.max(8, (((x1 - x0) * width) / 1000) * 0.08),
+    padY = Math.max(8, (((y1 - y0) * height) / 1000) * 0.08);
+  const left = Math.max(0, Math.floor((x0 * width) / 1000 - padX)),
+    top = Math.max(0, Math.floor((y0 * height) / 1000 - padY));
+  return {
+    left,
+    top,
+    width: Math.min(width, Math.ceil((x1 * width) / 1000 + padX)) - left,
+    height: Math.min(height, Math.ceil((y1 * height) / 1000 + padY)) - top,
+  };
+}
+export function mapPartsFromCrop(
+  parts: SemanticPart[],
+  crop: CropBounds,
+  width: number,
+  height: number,
+): SemanticPart[] {
+  const x = (v: number) =>
+      ((crop.left + (v * crop.width) / 1000) * 1000) / width,
+    y = (v: number) => ((crop.top + (v * crop.height) / 1000) * 1000) / height;
+  return parts.map((p) => {
+    let pixels: Uint8Array | undefined;
+    if (p.maskPixels) {
+      if (p.maskPixels.length !== crop.width * crop.height)
+        throw new Error('Maschera del ritaglio non valida.');
+      pixels = new Uint8Array(width * height);
+      for (let row = 0; row < crop.height; row++)
+        pixels.set(
+          p.maskPixels.subarray(row * crop.width, (row + 1) * crop.width),
+          (row + crop.top) * width + crop.left,
+        );
+    }
+    return {
+      ...p,
+      maskPixels: pixels,
+      box_2d: [y(p.box_2d[0]), x(p.box_2d[1]), y(p.box_2d[2]), x(p.box_2d[3])],
+      polygon: p.polygon?.map(([py, px]) => [y(py), x(px)]),
+    };
+  });
+}
+function assertImage(data: Uint8ClampedArray, width: number, height: number) {
+  if (
+    !Number.isInteger(width) ||
+    !Number.isInteger(height) ||
+    width < 1 ||
+    height < 1 ||
+    width * height > MAX_IMAGE_PIXELS ||
+    data.length !== width * height * 4
+  )
+    throw new Error('Dimensioni immagine non valide.');
+}
+export function isPointInPolygon(
+  x: number,
+  y: number,
+  polygon: [number, number][],
+): boolean {
   let inside = false;
   for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-    const xi = polygon[i][1];
-    const yi = polygon[i][0];
-    const xj = polygon[j][1];
-    const yj = polygon[j][0];
-
-    const intersect = yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi || 0.00001) + xi;
-    if (intersect) inside = !inside;
+    const [yi, xi] = polygon[i],
+      [yj, xj] = polygon[j];
+    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi)
+      inside = !inside;
   }
   return inside;
 }
-
-/**
- * Rasterizes a polygon in normalized [0-1000] coordinates to a binary Uint8Array mask of size width * height.
- */
 export function rasterizeNormalizedPolygon(
   polygon: [number, number][],
   width: number,
   height: number,
-): Uint8Array {
+) {
   const mask = new Uint8Array(width * height);
   if (!polygon || polygon.length < 3) return mask;
-
-  const scaledPolygon: [number, number][] = polygon.map(([yNorm, xNorm]) => [
-    (yNorm / 1000) * height,
-    (xNorm / 1000) * width,
-  ]);
-
-  // In Node.js or environments without DOM Canvas, use pure point-in-polygon
-  if (typeof document === 'undefined') {
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        if (isPointInPolygon(x, y, scaledPolygon)) {
-          mask[y * width + x] = 1;
-        }
-      }
+  const scaled = polygon.map(
+    ([y, x]) => [(y * height) / 1000, (x * width) / 1000] as [number, number],
+  );
+  const ys = scaled.map((p) => p[0]);
+  const top = Math.max(0, Math.floor(Math.min(...ys))),
+    bottom = Math.min(height, Math.ceil(Math.max(...ys)));
+  // Scanlines avoid testing every vertex for every pixel on larger iPad images.
+  for (let y = top; y < bottom; y++) {
+    const scan = y + 0.5,
+      crossings: number[] = [];
+    for (let i = 0, j = scaled.length - 1; i < scaled.length; j = i++) {
+      const [yi, xi] = scaled[i],
+        [yj, xj] = scaled[j];
+      if (yi > scan !== yj > scan)
+        crossings.push(xi + ((scan - yi) * (xj - xi)) / (yj - yi));
     }
-    return mask;
-  }
-
-  // In browser, use 2D canvas path fill for hardware acceleration
-  const canvas = createCanvas(width, height);
-  const ctx = context(canvas);
-  ctx.fillStyle = '#ffffff';
-  ctx.beginPath();
-
-  scaledPolygon.forEach(([y, x], idx) => {
-    if (idx === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  });
-  ctx.closePath();
-  ctx.fill();
-
-  const imgData = ctx.getImageData(0, 0, width, height).data;
-  for (let i = 0; i < width * height; i++) {
-    if (imgData[i * 4 + 3] > 64) {
-      mask[i] = 1;
+    crossings.sort((a, b) => a - b);
+    for (let k = 0; k + 1 < crossings.length; k += 2) {
+      const left = Math.max(0, Math.ceil(crossings[k] - 0.5)),
+        right = Math.min(width, Math.ceil(crossings[k + 1] - 0.5));
+      if (right > left) mask.fill(1, y * width + left, y * width + right);
     }
   }
   return mask;
 }
 
-/**
- * Extracts lineart / ink pen contours using local contrast gradient.
- * Avoids capturing broad flat dark clothing areas as lines.
- */
-export function extractLineartMask(
-  srcData: Uint8ClampedArray,
+/** Decode probability maps inside their own boxes; disconnected parts and holes survive. */
+export async function decodeSemanticParts(
+  parts: SemanticPart[],
   width: number,
   height: number,
-  darknessThreshold: number = 75,
-): Uint8Array {
-  const lineartMask = new Uint8Array(width * height);
-
-  // Compute local luminance and Sobel edge intensity
-  const lum = new Float32Array(width * height);
-  for (let i = 0; i < width * height; i++) {
-    const p = i * 4;
-    const a = srcData[p + 3];
-    if (a < 30) {
-      lum[i] = 255; // transparent treated as light
-    } else {
-      lum[i] = 0.299 * srcData[p] + 0.587 * srcData[p + 1] + 0.114 * srcData[p + 2];
+): Promise<SemanticPart[]> {
+  if (width * height > MAX_IMAGE_PIXELS)
+    throw new Error('Immagine troppo grande.');
+  const decoded: SemanticPart[] = [];
+  for (const part of parts) {
+    if (!part.mask) {
+      decoded.push(part);
+      continue;
     }
-  }
-
-  for (let y = 1; y < height - 1; y++) {
-    for (let x = 1; x < width - 1; x++) {
-      const idx = y * width + x;
-      const p = idx * 4;
-      if (srcData[p + 3] < 30) continue;
-
-      const currentLum = lum[idx];
-      // Only pixels that are relatively dark can be lineart
-      if (currentLum > darknessThreshold) continue;
-
-      // Sobel gradient
-      const gx =
-        -lum[(y - 1) * width + (x - 1)] +
-        lum[(y - 1) * width + (x + 1)] -
-        2 * lum[y * width + (x - 1)] +
-        2 * lum[y * width + (x + 1)] -
-        lum[(y + 1) * width + (x - 1)] +
-        lum[(y + 1) * width + (x + 1)];
-
-      const gy =
-        -lum[(y - 1) * width + (x - 1)] -
-        2 * lum[(y - 1) * width + x] -
-        lum[(y - 1) * width + (x + 1)] +
-        lum[(y + 1) * width + (x - 1)] +
-        2 * lum[(y + 1) * width + x] +
-        lum[(y + 1) * width + (x + 1)];
-
-      const edgeMagnitude = Math.hypot(gx, gy);
-
-      // Lineart if strong contrast edge or ultra-dark stroke
-      if (edgeMagnitude > 60 || currentLum < 35) {
-        lineartMask[idx] = 1;
+    const bytes = Uint8Array.from(atob(part.mask), (c) => c.charCodeAt(0));
+    if (bytes.length < 24) throw new Error('PNG della maschera incompleto.');
+    const header = new DataView(bytes.buffer);
+    const w = header.getUint32(16),
+      h = header.getUint32(20);
+    if (!w || !h || w > 2048 || h > 2048 || w * h > MAX_IMAGE_PIXELS)
+      throw new Error('Dimensioni della maschera non valide.');
+    const image = await loadImage(`data:image/png;base64,${part.mask}`);
+    const [y0, x0, y1, x1] = part.box_2d;
+    const left = Math.floor((x0 * width) / 1000),
+      top = Math.floor((y0 * height) / 1000);
+    const right = Math.min(width, Math.ceil((x1 * width) / 1000)),
+      bottom = Math.min(height, Math.ceil((y1 * height) / 1000));
+    const canvas = createCanvas(right - left, bottom - top),
+      ctx = context(canvas);
+    ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+    const rgba = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    const pixels = new Uint8Array(width * height);
+    for (let y = 0; y < canvas.height; y++)
+      for (let x = 0; x < canvas.width; x++) {
+        const p = (y * canvas.width + x) * 4;
+        pixels[(y + top) * width + x + left] = Math.round(
+          (rgba[p] * rgba[p + 3]) / 255,
+        );
       }
-    }
+    canvas.width = 1;
+    canvas.height = 1;
+    decoded.push({ ...part, mask: undefined, maskPixels: pixels });
   }
-
-  return lineartMask;
+  return decoded;
 }
 
-/**
- * Initializes editable masks from detected SemanticParts.
- * Assigns every non-transparent pixel to a layer cleanly without gaps.
- */
+function borderBackground(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+) {
+  const result = new Uint8Array(width * height),
+    corners = [0, width - 1, (height - 1) * width, width * height - 1];
+  const base = corners[0] * 4;
+  const cornerColor = [data[base], data[base + 1], data[base + 2]];
+  if (!(Math.max(...cornerColor) < 30 || Math.min(...cornerColor) > 235))
+    return result;
+  if (
+    !corners.every(
+      (i) =>
+        Math.hypot(
+          data[i * 4] - data[base],
+          data[i * 4 + 1] - data[base + 1],
+          data[i * 4 + 2] - data[base + 2],
+        ) < 15,
+    )
+  )
+    return result;
+  const queue = new Int32Array(width * height);
+  let head = 0,
+    tail = 0;
+  function visit(i: number) {
+    if (result[i]) return;
+    const p = i * 4;
+    if (
+      data[p + 3] &&
+      Math.hypot(
+        data[p] - data[base],
+        data[p + 1] - data[base + 1],
+        data[p + 2] - data[base + 2],
+      ) <= 18
+    ) {
+      result[i] = 1;
+      queue[tail++] = i;
+    }
+  }
+  corners.forEach(visit);
+  while (head < tail) {
+    const i = queue[head++],
+      x = i % width;
+    if (x) visit(i - 1);
+    if (x + 1 < width) visit(i + 1);
+    if (i >= width) visit(i - width);
+    if (i + width < result.length) visit(i + width);
+  }
+  return result;
+}
+
+export function extractLineartMask(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  darknessThreshold = 90,
+  foreground?: Uint8Array,
+): Uint8Array {
+  assertImage(data, width, height);
+  const count = width * height,
+    lum = new Float32Array(count),
+    horizontal = new Float32Array(count),
+    localMax = new Float32Array(count);
+  const bg = foreground ? null : borderBackground(data, width, height);
+  for (let i = 0; i < count; i++)
+    lum[i] = data[i * 4 + 3]
+      ? data[i * 4] * 0.299 + data[i * 4 + 1] * 0.587 + data[i * 4 + 2] * 0.114
+      : 0;
+  const radius = Math.max(
+    2,
+    Math.min(8, Math.round(Math.min(width, height) / 220)),
+  );
+  // Separable maximum filter: local contrast without filling broad dark regions.
+  const queue = new Int32Array(Math.max(width, height));
+  for (let y = 0; y < height; y++) {
+    let head = 0,
+      tail = 0,
+      next = 0;
+    for (let x = 0; x < width; x++) {
+      while (next < width && next <= x + radius) {
+        while (
+          tail > head &&
+          lum[y * width + queue[tail - 1]] <= lum[y * width + next]
+        )
+          tail--;
+        queue[tail++] = next++;
+      }
+      while (head < tail && queue[head] < x - radius) head++;
+      horizontal[y * width + x] = lum[y * width + queue[head]];
+    }
+  }
+  for (let x = 0; x < width; x++) {
+    let head = 0,
+      tail = 0,
+      next = 0;
+    for (let y = 0; y < height; y++) {
+      while (next < height && next <= y + radius) {
+        while (
+          tail > head &&
+          horizontal[queue[tail - 1] * width + x] <=
+            horizontal[next * width + x]
+        )
+          tail--;
+        queue[tail++] = next++;
+      }
+      while (head < tail && queue[head] < y - radius) head++;
+      localMax[y * width + x] = horizontal[queue[head] * width + x];
+    }
+  }
+  const out = new Uint8Array(count);
+  for (let i = 0; i < count; i++)
+    if (
+      data[i * 4 + 3] > 0 &&
+      (foreground ? foreground[i] : !bg![i]) &&
+      lum[i] < darknessThreshold &&
+      localMax[i] - lum[i] > 18
+    )
+      out[i] = 1;
+  return out;
+}
+
+export function masksFromOwners(
+  owners: Uint8Array,
+  definitions = SEMANTIC_HIERARCHY,
+): SemanticRefinementMask[] {
+  return definitions.map((h, index) => {
+    const mask = new Uint8Array(owners.length);
+    let pixelCount = 0;
+    for (let i = 0; i < owners.length; i++)
+      if (owners[i] === index) {
+        mask[i] = 1;
+        pixelCount++;
+      }
+    return {
+      ...h,
+      partId: `mask-${index}`,
+      name: h.defaultName,
+      mask,
+      pixelCount,
+    };
+  });
+}
+export function ownersFromMasks(
+  masks: SemanticRefinementMask[],
+  data: Uint8ClampedArray,
+) {
+  const definitions = definitionsFromMasks(masks);
+  const unassigned = indexOf('Da assegnare', definitions);
+  if (unassigned < 0) throw new Error('Manca il livello Da assegnare.');
+  const owners = new Uint8Array(data.length / 4).fill(EMPTY_PIXEL);
+  for (let i = 0; i < owners.length; i++)
+    if (data[i * 4 + 3]) owners[i] = unassigned;
+  // Highest-priority layer wins any legacy overlap. No source pixels are dropped.
+  for (const h of [...definitions].reverse()) {
+    const mask = masks.find((m) => m.label === h.label)?.mask;
+    if (!mask) continue;
+    for (let i = 0; i < owners.length; i++)
+      if (data[i * 4 + 3] && mask[i]) owners[i] = indexOf(h.label, definitions);
+  }
+  return owners;
+}
 export function initializeSemanticRefinementMasks(
-  srcData: Uint8ClampedArray,
+  data: Uint8ClampedArray,
   width: number,
   height: number,
   parts: SemanticPart[],
+  definitions = SEMANTIC_HIERARCHY,
 ): SemanticRefinementMask[] {
-  const total = width * height;
-  const masksMap: Map<SemanticLabel, Uint8Array> = new Map();
-
-  // 1. Lineart mask
-  const lineart = extractLineartMask(srcData, width, height, 75);
-  masksMap.set('Tratto', lineart);
-
-  // 2. Rasterize parts polygons
-  const partMasks = parts.map((part) => ({
-    part,
-    rawMask: rasterizeNormalizedPolygon(part.polygon, width, height),
-  }));
-
-  // Create empty masks for all possible labels in hierarchy
-  for (const h of SEMANTIC_HIERARCHY) {
-    if (!masksMap.has(h.label)) {
-      masksMap.set(h.label, new Uint8Array(total));
+  assertImage(data, width, height);
+  const unassigned = indexOf('Da assegnare', definitions);
+  const owners = new Uint8Array(width * height).fill(EMPTY_PIXEL);
+  const candidates = parts
+    .filter((p) => p.label !== 'Tratto')
+    .map((p) => ({
+      label: p.label,
+      pixels:
+        p.maskPixels ??
+        rasterizeNormalizedPolygon(p.polygon ?? [], width, height),
+      binary: !p.maskPixels,
+    }));
+  for (let i = 0; i < owners.length; i++)
+    if (data[i * 4 + 3]) owners[i] = unassigned;
+  // Paint back to front once per region; foreground parts win overlaps.
+  for (const definition of [...definitions].reverse()) {
+    for (const candidate of candidates.filter(
+      (c) => c.label === definition.label,
+    )) {
+      const owner = indexOf(definition.label, definitions);
+      for (let i = 0; i < owners.length; i++)
+        if (
+          data[i * 4 + 3] &&
+          (candidate.binary
+            ? candidate.pixels[i] > 0
+            : candidate.pixels[i] >= 128)
+        )
+          owners[i] = owner;
     }
   }
-
-  // 3. Assign character pixels to parts
-  // Priority order for overlap: Occhi > Bocca > Accessori > Capelli > Pelle > Vestiti > Sfondo
-  const priorityLabels: SemanticLabel[] = [
-    'Occhi',
-    'Bocca',
-    'Accessori',
-    'Capelli',
-    'Pelle',
-    'Vestiti',
-    'Sfondo',
-  ];
-
-  for (let i = 0; i < total; i++) {
-    const a = srcData[i * 4 + 3];
-    if (a < 20) continue; // transparent background
-
-    // If lineart captured it, keep it in lineart layer as well
-    // Now determine the primary colored body layer for this pixel:
-    let assigned = false;
-    for (const label of priorityLabels) {
-      const matchingParts = partMasks.filter((p) => p.part.label === label);
-      for (const pm of matchingParts) {
-        if (pm.rawMask[i] === 1) {
-          masksMap.get(label)![i] = 1;
-          assigned = true;
-          break;
-        }
-      }
-      if (assigned) break;
-    }
-
-    // Fallback: If pixel is foreground but fell outside polygons, assign to nearest or Vestiti/Pelle
-    if (!assigned) {
-      // Warm skin tone check
-      const r = srcData[i * 4];
-      const g = srcData[i * 4 + 1];
-      const b = srcData[i * 4 + 2];
-      if (r > 160 && g > 110 && b > 80 && r > g && g > b) {
-        masksMap.get('Pelle')![i] = 1;
-      } else {
-        masksMap.get('Vestiti')![i] = 1;
-      }
-    }
+  const inferred = borderBackground(data, width, height),
+    fg = new Uint8Array(owners.length);
+  for (let i = 0; i < owners.length; i++) {
+    if (owners[i] === unassigned && inferred[i])
+      owners[i] = indexOf('Sfondo', definitions);
+    fg[i] = Number(
+      owners[i] !== EMPTY_PIXEL && owners[i] !== indexOf('Sfondo', definitions),
+    );
   }
-
-  // Build the list of active masks according to the 8 layers
-  const refinementMasks: SemanticRefinementMask[] = [];
-
-  for (const item of SEMANTIC_HIERARCHY) {
-    const mask = masksMap.get(item.label)!;
-    let pixelCount = 0;
-    for (let i = 0; i < total; i++) {
-      if (mask[i] === 1) pixelCount++;
-    }
-
-    // Include if it has pixels or if it's one of the primary anatomy layers
-    if (
-      pixelCount > 0 ||
-      [
-        'Tratto',
-        'Accessori',
-        'Capelli',
-        'Pelle',
-        'Occhi',
-        'Bocca',
-        'Vestiti',
-      ].includes(item.label)
-    ) {
-      refinementMasks.push({
-        partId: `mask-${item.label.toLowerCase()}`,
-        label: item.label,
-        name: item.defaultName,
-        colorHex: item.colorHex,
-        mask,
-        pixelCount,
-      });
-    }
-  }
-
-  return refinementMasks;
+  const ink = extractLineartMask(data, width, height, 90, fg);
+  for (let i = 0; i < ink.length; i++)
+    if (ink[i]) owners[i] = indexOf('Tratto', definitions);
+  return masksFromOwners(owners, definitions);
 }
 
-/**
- * Creates the complete 9-tier LayerItem array for the project:
- * 1. Tratto / Contorni (Lineart)
- * 2. Accessori
- * 3. Occhi
- * 4. Bocca
- * 5. Capelli
- * 6. Pelle
- * 7. Vestiti
- * 8. Sfondo
- * 9. Originale intatto (nascosto, visible: false)
- */
-export function buildProjectLayersFromMasks(
-  sourceLayer: LayerItem,
-  masks: SemanticRefinementMask[],
-): LayerItem[] {
-  const srcCanvas = sourceLayer.canvas;
-  const width = srcCanvas.width;
-  const height = srcCanvas.height;
-  const ctx = context(srcCanvas);
-  const srcImageData = ctx.getImageData(0, 0, width, height);
-  const srcData = srcImageData.data;
-
-  const resultLayers: LayerItem[] = [];
-
-  // Generate each layer from its mask
-  for (const refMask of masks) {
-    if (refMask.pixelCount === 0) continue;
-
-    // Find bounding box to keep layer compact
-    let minX = width;
-    let maxX = 0;
-    let minY = height;
-    let maxY = 0;
-
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        const i = y * width + x;
-        if (refMask.mask[i] === 1) {
-          if (x < minX) minX = x;
-          if (x > maxX) maxX = x;
-          if (y < minY) minY = y;
-          if (y > maxY) maxY = y;
-        }
-      }
+export type SelectionPoint = { x: number; y: number };
+export function selectConnectedRegion(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  start: SelectionPoint,
+  tolerance: number,
+  limit?: Uint8Array,
+): Uint8Array {
+  assertImage(data, width, height);
+  const selected = new Uint8Array(width * height),
+    visited = new Uint8Array(width * height),
+    queue = new Int32Array(width * height);
+  const sx = Math.floor(start.x),
+    sy = Math.floor(start.y);
+  if (sx < 0 || sy < 0 || sx >= width || sy >= height) return selected;
+  const seed = sy * width + sx,
+    p = seed * 4;
+  if (!data[p + 3]) return selected;
+  const t = Math.max(0, Math.min(160, tolerance));
+  let head = 0,
+    tail = 0;
+  function visit(i: number) {
+    if (visited[i]) return;
+    visited[i] = 1;
+    const q = i * 4;
+    if (
+      data[q + 3] &&
+      (!limit || limit[i]) &&
+      Math.hypot(
+        data[q] - data[p],
+        data[q + 1] - data[p + 1],
+        data[q + 2] - data[p + 2],
+      ) <= t
+    ) {
+      selected[i] = 1;
+      queue[tail++] = i;
     }
-
-    if (minX > maxX || minY > maxY) continue;
-
-    const layerW = maxX - minX + 1;
-    const layerH = maxY - minY + 1;
-
-    const layerCanvas = createCanvas(layerW, layerH);
-    const layerCtx = context(layerCanvas);
-    const layerImageData = layerCtx.createImageData(layerW, layerH);
-    const layerData = layerImageData.data;
-
-    for (let y = minY; y <= maxY; y++) {
-      for (let x = minX; x <= maxX; x++) {
-        const srcIdx = y * width + x;
-        if (refMask.mask[srcIdx] === 1) {
-          const destIdx = (y - minY) * layerW + (x - minX);
-          const sp = srcIdx * 4;
-          const dp = destIdx * 4;
-          layerData[dp] = srcData[sp];
-          layerData[dp + 1] = srcData[sp + 1];
-          layerData[dp + 2] = srcData[sp + 2];
-          layerData[dp + 3] = srcData[sp + 3];
-        }
-      }
-    }
-
-    layerCtx.putImageData(layerImageData, 0, 0);
-
-    const scaleX = sourceLayer.width / width;
-    const scaleY = sourceLayer.height / height;
-
-    const isLineart = refMask.label === 'Tratto';
-    const item = makeLayer(
-      layerCanvas,
-      refMask.name,
-      Math.round(sourceLayer.x + minX * scaleX),
-      Math.round(sourceLayer.y + minY * scaleY),
-    );
-
-    item.width = Math.max(1, Math.round(layerW * scaleX));
-    item.height = Math.max(1, Math.round(layerH * scaleY));
-    item.blendMode = isLineart ? 'normal' : sourceLayer.blendMode;
-    item.opacity = sourceLayer.opacity;
-    item.visible = true;
-
-    resultLayers.push(item);
   }
-
-  // 9. Add untouched Originale layer at bottom (visible: false)
-  const origCanvas = createCanvas(width, height);
-  context(origCanvas).drawImage(srcCanvas, 0, 0);
-
-  const originalLayer = makeLayer(
-    origCanvas,
-    'Originale (Recupero)',
-    sourceLayer.x,
-    sourceLayer.y,
+  visit(seed);
+  while (head < tail) {
+    const i = queue[head++],
+      x = i % width;
+    if (x) visit(i - 1);
+    if (x + 1 < width) visit(i + 1);
+    if (i >= width) visit(i - width);
+    if (i + width < selected.length) visit(i + width);
+  }
+  return selected;
+}
+export function selectionPolygon(
+  points: SelectionPoint[],
+  width: number,
+  height: number,
+) {
+  return rasterizeNormalizedPolygon(
+    points.map((p) => [(p.y * 1000) / height, (p.x * 1000) / width]),
+    width,
+    height,
   );
-  originalLayer.width = sourceLayer.width;
-  originalLayer.height = sourceLayer.height;
-  originalLayer.visible = false; // Hidden in PSD for non-destructive recovery
-  originalLayer.locked = true;
+}
+export function paintOwners(
+  owners: Uint8Array,
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  from: SelectionPoint,
+  to: SelectionPoint,
+  radius: number,
+  target: SemanticLabel,
+  definitions = SEMANTIC_HIERARCHY,
+) {
+  const next = new Uint8Array(owners),
+    r = Math.max(0.5, Math.min(1000, radius)),
+    steps = Math.max(
+      1,
+      Math.ceil(
+        Math.hypot(to.x - from.x, to.y - from.y) / Math.max(1, r * 0.4),
+      ),
+    );
+  for (let s = 0; s <= steps; s++) {
+    const cx = from.x + ((to.x - from.x) * s) / steps,
+      cy = from.y + ((to.y - from.y) * s) / steps;
+    for (
+      let y = Math.max(0, Math.floor(cy - r));
+      y <= Math.min(height - 1, Math.ceil(cy + r));
+      y++
+    )
+      for (
+        let x = Math.max(0, Math.floor(cx - r));
+        x <= Math.min(width - 1, Math.ceil(cx + r));
+        x++
+      )
+        if (
+          (x - cx) ** 2 + (y - cy) ** 2 <= r * r &&
+          data[(y * width + x) * 4 + 3]
+        )
+          next[y * width + x] = indexOf(target, definitions);
+  }
+  return next;
+}
+export function assignSelection(
+  owners: Uint8Array,
+  selection: Uint8Array,
+  data: Uint8ClampedArray,
+  target: SemanticLabel,
+  definitions = SEMANTIC_HIERARCHY,
+) {
+  if (selection.length !== owners.length)
+    throw new Error('Selezione non valida.');
+  const next = new Uint8Array(owners);
+  for (let i = 0; i < next.length; i++)
+    if (selection[i] && data[i * 4 + 3]) next[i] = indexOf(target, definitions);
+  return next;
+}
 
-  resultLayers.push(originalLayer);
+export function buildProjectLayersFromMasks(
+  source: LayerItem,
+  masks: SemanticRefinementMask[],
+  inventory?: SemanticInventory,
+): LayerItem[] {
+  const width = source.canvas.width,
+    height = source.canvas.height,
+    data = context(source.canvas).getImageData(0, 0, width, height).data;
+  const definitions = definitionsFromMasks(masks);
+  const owners = ownersFromMasks(masks, data),
+    group = inventory?.id ?? source.semanticGroupId ?? crypto.randomUUID(),
+    layers: LayerItem[] = [];
+  for (let index = 0; index < definitions.length; index++) {
+    let left = width,
+      top = height,
+      right = -1,
+      bottom = -1;
+    for (let y = 0; y < height; y++)
+      for (let x = 0; x < width; x++)
+        if (owners[y * width + x] === index) {
+          left = Math.min(left, x);
+          top = Math.min(top, y);
+          right = Math.max(right, x);
+          bottom = Math.max(bottom, y);
+        }
+    if (right < left) continue;
+    const canvas = createCanvas(right - left + 1, bottom - top + 1),
+      ctx = context(canvas),
+      image = ctx.createImageData(canvas.width, canvas.height);
+    for (let y = top; y <= bottom; y++)
+      for (let x = left; x <= right; x++)
+        if (owners[y * width + x] === index)
+          image.data.set(
+            data.subarray((y * width + x) * 4, (y * width + x) * 4 + 4),
+            ((y - top) * canvas.width + x - left) * 4,
+          );
+    ctx.putImageData(image, 0, 0);
+    const sx = source.width / width,
+      sy = source.height / height,
+      item = makeLayer(
+        canvas,
+        definitions[index].defaultName,
+        source.x + left * sx,
+        source.y + top * sy,
+      );
+    Object.assign(item, {
+      width: canvas.width * sx,
+      height: canvas.height * sy,
+      opacity: source.opacity,
+      blendMode: source.blendMode,
+      semanticGroupId: group,
+      semanticRole: definitions[index].label,
+      semanticLeft: left,
+      semanticTop: top,
+    });
+    layers.push(item);
+  }
+  const original = makeLayer(
+    source.canvas,
+    'Originale (Recupero)',
+    source.x,
+    source.y,
+  );
+  Object.assign(original, {
+    width: source.width,
+    height: source.height,
+    opacity: source.opacity,
+    blendMode: source.blendMode,
+    visible: false,
+    locked: true,
+    semanticGroupId: group,
+    semanticRole: 'Originale',
+    semanticInventory: masks.some((m) => m.label.startsWith('part:'))
+      ? (inventory ?? source.semanticInventory)
+      : undefined,
+    semanticLeft: 0,
+    semanticTop: 0,
+  });
+  layers.push(original);
+  return layers;
+}
 
-  return resultLayers;
+/** Keep edits made in the layer panel when masks are refined again. */
+export function preserveSemanticLayerEdits(
+  generated: LayerItem[],
+  existing: LayerItem[],
+) {
+  return generated.map((layer) => {
+    const before = existing.find(
+      (item) =>
+        item.semanticRole === layer.semanticRole &&
+        item.semanticGroupId === layer.semanticGroupId,
+    );
+    if (!before) return layer;
+    const sx = before.width / before.canvas.width,
+      sy = before.height / before.canvas.height;
+    return {
+      ...layer,
+      id: before.id,
+      name: before.name,
+      visible: before.visible,
+      locked: before.locked,
+      opacity: before.opacity,
+      blendMode: before.blendMode,
+      x:
+        before.x +
+        ((layer.semanticLeft ?? 0) - (before.semanticLeft ?? 0)) * sx,
+      y: before.y + ((layer.semanticTop ?? 0) - (before.semanticTop ?? 0)) * sy,
+      width: layer.canvas.width * sx,
+      height: layer.canvas.height * sy,
+    };
+  });
+}
+
+/** Reopen a generated group without a second API request or duplicated extraction. */
+export function restoreGroupMasks(source: LayerItem, layers: LayerItem[]) {
+  const w = source.canvas.width,
+    h = source.canvas.height,
+    raw = context(source.canvas).getImageData(0, 0, w, h).data;
+  const definitions = source.semanticInventory
+    ? definitionsFromInventory(source.semanticInventory)
+    : SEMANTIC_HIERARCHY;
+  const named = definitions.map((d) => ({
+    ...d,
+    defaultName:
+      layers.find((l) => l.semanticRole === d.label)?.name ?? d.defaultName,
+  }));
+  const unassigned = indexOf('Da assegnare', named);
+  const owners = new Uint8Array(w * h).fill(EMPTY_PIXEL);
+  for (let i = 0; i < owners.length; i++)
+    if (raw[i * 4 + 3]) owners[i] = unassigned;
+  for (const l of [...layers].reverse()) {
+    const label = l.semanticRole as SemanticLabel;
+    if (!isSemanticLabel(label) || indexOf(label, named) < 0) continue;
+    const pixels = context(l.canvas).getImageData(
+      0,
+      0,
+      l.canvas.width,
+      l.canvas.height,
+    ).data;
+    const left = l.semanticLeft ?? Math.round(l.x - source.x),
+      top = l.semanticTop ?? Math.round(l.y - source.y);
+    for (let y = 0; y < l.canvas.height; y++)
+      for (let x = 0; x < l.canvas.width; x++) {
+        const tx = x + left,
+          ty = y + top;
+        if (
+          tx >= 0 &&
+          tx < w &&
+          ty >= 0 &&
+          ty < h &&
+          pixels[(y * l.canvas.width + x) * 4 + 3] &&
+          raw[(ty * w + tx) * 4 + 3]
+        )
+          owners[ty * w + tx] = indexOf(label, named);
+      }
+  }
+  return masksFromOwners(owners, named);
 }

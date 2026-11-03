@@ -50,3 +50,28 @@ test('project validation rejects invalid, nonfinite or excessive metadata before
     assert.throws(() => validateStoredProject(p));
   }
 });
+
+test('dynamic inventories survive project validation and malformed discovery metadata is rejected', () => {
+  const project: any = valid();
+  Object.assign(project.layers[0], {
+    semanticGroupId: 'soldier-test',
+    semanticRole: 'Originale',
+    semanticLeft: 0,
+    semanticTop: 0,
+    semanticInventory: {
+      id: 'soldier-test',
+      subject: 'Soldato',
+      parts: [
+        {
+          id: 'part:1',
+          name: 'Elmo',
+          description: 'Copricapo metallico',
+          box_2d: [0, 0, 300, 500],
+        },
+      ],
+    },
+  });
+  assert.doesNotThrow(() => validateStoredProject(project));
+  project.layers[0].semanticInventory.parts[0].id = 'arbitrary-role';
+  assert.throws(() => validateStoredProject(project));
+});

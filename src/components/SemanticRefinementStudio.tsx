@@ -1,679 +1,758 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
-
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+/** @license SPDX-License-Identifier: Apache-2.0 */
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { PointerEvent as ReactPointerEvent } from 'react';
 import {
   Eye,
   EyeOff,
+  MousePointer2,
+  WandSparkles,
+  LassoSelect,
   Paintbrush,
-  Eraser,
+  Hand,
   Undo2,
   Redo2,
-  RotateCcw,
+  Minus,
+  Plus,
+  Maximize,
   Check,
-  Layers,
-  Sparkles,
-  Info,
-  ShieldCheck,
-  ArrowRightLeft,
-  Merge,
+  RotateCcw,
+  X,
 } from 'lucide-react';
+import type { SemanticInventory } from '../utils/semanticProtocol';
 import type { LayerItem } from '../types';
 import type {
   SemanticLabel,
   SemanticRefinementMask,
+  SelectionPoint,
 } from '../utils/semanticSegmentation';
 import {
+  definitionsFromMasks,
+  displayPartName,
+  EMPTY_PIXEL,
+  ownersFromMasks,
+  masksFromOwners,
+  paintOwners,
+  selectConnectedRegion,
+  selectionPolygon,
+  assignSelection,
   buildProjectLayersFromMasks,
-  SEMANTIC_HIERARCHY,
 } from '../utils/semanticSegmentation';
-import { createCanvas, context } from '../utils/canvasHelpers';
+import { context } from '../utils/canvasHelpers';
 
-interface Props {
-  sourceLayer: LayerItem;
-  initialMasks: SemanticRefinementMask[];
-  isMock: boolean;
-  modelUsed: string;
-  onApply: (layers: LayerItem[]) => void;
-  onBack: () => void;
-}
-
-type ViewMode = 'overlay' | 'solo' | 'composite';
-type BrushTool = 'brush' | 'eraser';
-
+type Tool = 'pick' | 'region' | 'lasso' | 'brush' | 'pan';
+type History = {
+  past: Uint8Array[];
+  present: Uint8Array;
+  future: Uint8Array[];
+};
+type Point = SelectionPoint;
+type Gesture = {
+  mode: Tool | 'pinch';
+  start: Point;
+  pan: Point;
+  before: Uint8Array;
+  last: Point;
+  points: Point[];
+  distance?: number;
+  zoom?: number;
+  center?: Point;
+  pointer: number;
+};
 export function SemanticRefinementStudio({
   sourceLayer,
   initialMasks,
   isMock,
   modelUsed,
+  warning,
+  inventory,
   onApply,
   onBack,
-}: Props) {
-  // Deep clone initial masks so we can mutate cleanly and support undo/redo
-  const [masks, setMasks] = useState<SemanticRefinementMask[]>(() =>
-    initialMasks.map((m) => ({
-      ...m,
-      mask: new Uint8Array(m.mask),
-    })),
+}: {
+  sourceLayer: LayerItem;
+  initialMasks: SemanticRefinementMask[];
+  isMock: boolean;
+  modelUsed: string;
+  warning?: string;
+  inventory?: SemanticInventory;
+  onApply: (layers: LayerItem[]) => void;
+  onBack: () => void;
+}) {
+  const hierarchy = useMemo(
+    () => definitionsFromMasks(initialMasks),
+    [initialMasks],
   );
-
-  const [activeLabel, setActiveLabel] = useState<SemanticLabel>(() => {
-    return initialMasks[0]?.label || 'Pelle';
-  });
-
-  const [visibleLabels, setVisibleLabels] = useState<Set<SemanticLabel>>(
-    () => new Set(initialMasks.map((m) => m.label)),
+  const unassigned = hierarchy.findIndex((h) => h.label === 'Da assegnare');
+  const partName = (label: SemanticLabel) =>
+    displayPartName(hierarchy.find((h) => h.label === label)!);
+  const width = sourceLayer.canvas.width,
+    height = sourceLayer.canvas.height;
+  const data = useMemo(
+    () => context(sourceLayer.canvas).getImageData(0, 0, width, height).data,
+    [sourceLayer.canvas, width, height],
   );
-
-  const [viewMode, setViewMode] = useState<ViewMode>('overlay');
-  const [brushTool, setBrushTool] = useState<BrushTool>('brush');
-  const [brushSize, setBrushSize] = useState<number>(18);
-  const [overlayAlpha, setOverlayAlpha] = useState<number>(0.55);
-
-  // History stack for undo/redo
-  const [history, setHistory] = useState<Uint8Array[][]>([]);
-  const [historyIndex, setHistoryIndex] = useState<number>(-1);
-
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const isDrawing = useRef(false);
-  const lastPos = useRef<{ x: number; y: number } | null>(null);
-
-  const width = sourceLayer.canvas.width;
-  const height = sourceLayer.canvas.height;
-
-  // Save state to undo history
-  const pushHistoryState = useCallback(
-    (nextMasks: SemanticRefinementMask[]) => {
-      const snapshot = nextMasks.map((m) => new Uint8Array(m.mask));
-      setHistory((prev) => {
-        const sliced = prev.slice(0, historyIndex + 1);
-        return [...sliced, snapshot].slice(-15); // keep max 15
-      });
-      setHistoryIndex((prev) => Math.min(prev + 1, 14));
-    },
-    [historyIndex],
+  const [history, setHistory] = useState<History>(() => ({
+    past: [],
+    present: ownersFromMasks(initialMasks, data),
+    future: [],
+  }));
+  const state = useRef(history);
+  state.current = history;
+  const [active, setActive] = useState<SemanticLabel>(
+    () =>
+      initialMasks.find((m) => m.label === 'Pelle' && m.pixelCount)?.label ??
+      initialMasks.find((m) => m.pixelCount && m.label !== 'Tratto')?.label ??
+      'Da assegnare',
   );
-
-  // Initial history snapshot
-  useEffect(() => {
-    if (history.length === 0 && masks.length > 0) {
-      const initialSnapshot = masks.map((m) => new Uint8Array(m.mask));
-      setHistory([initialSnapshot]);
-      setHistoryIndex(0);
-    }
-  }, [masks, history.length]);
-
-  const canUndo = historyIndex > 0;
-  const canRedo = historyIndex < history.length - 1;
-
-  const handleUndo = useCallback(() => {
-    if (!canUndo) return;
-    const targetSnapshot = history[historyIndex - 1];
-    setHistoryIndex((idx) => idx - 1);
-    setMasks((current) =>
-      current.map((m, i) => {
-        const restored = new Uint8Array(targetSnapshot[i]);
-        let pixelCount = 0;
-        for (let p = 0; p < restored.length; p++) {
-          if (restored[p] === 1) pixelCount++;
-        }
-        return {
-          ...m,
-          mask: restored,
-          pixelCount,
-        };
-      }),
+  const [tool, setTool] = useState<Tool>('pick'),
+    [view, setView] = useState<'overlay' | 'solo' | 'composite'>('overlay');
+  const [action, setAction] = useState<'add' | 'remove'>('add'),
+    [diameter, setDiameter] = useState(24),
+    [tolerance, setTolerance] = useState(30);
+  const [visible, setVisible] = useState(
+    () => new Set(hierarchy.map((h) => h.label)),
+  );
+  const [selection, setSelection] = useState<Uint8Array | null>(null),
+    [path, setPath] = useState<Point[]>([]);
+  const [zoom, setZoom] = useState(0.5),
+    [pan, setPan] = useState<Point>({ x: 0, y: 0 }),
+    [notice, setNotice] = useState('');
+  const viewport = useRef<HTMLDivElement>(null),
+    canvas = useRef<HTMLCanvasElement>(null),
+    paper = useRef<HTMLDivElement>(null);
+  const points = useRef(new Map<number, Point>()),
+    gesture = useRef<Gesture | null>(null),
+    regionSeed = useRef<Point | null>(null),
+    zoomRef = useRef(zoom);
+  zoomRef.current = zoom;
+  const counts = useMemo(() => {
+    const c = new Uint32Array(hierarchy.length);
+    for (const o of history.present) if (o !== EMPTY_PIXEL) c[o]++;
+    return c;
+  }, [history.present]);
+  const selectionCount = useMemo(
+    () => selection?.reduce((n, v) => n + v, 0) ?? 0,
+    [selection],
+  );
+  const target: SemanticLabel = action === 'remove' ? 'Da assegnare' : active;
+  function replace(next: History) {
+    state.current = next;
+    setHistory(next);
+  }
+  function draft(owners: Uint8Array) {
+    replace({ ...state.current, present: owners });
+  }
+  function commit(owners: Uint8Array, before = state.current.present) {
+    if (owners.every((v, i) => v === before[i])) return;
+    const max = Math.min(
+      15,
+      Math.max(1, Math.floor(24_000_000 / owners.length) - 1),
     );
-  }, [canUndo, history, historyIndex]);
-
-  const handleRedo = useCallback(() => {
-    if (!canRedo) return;
-    const targetSnapshot = history[historyIndex + 1];
-    setHistoryIndex((idx) => idx + 1);
-    setMasks((current) =>
-      current.map((m, i) => {
-        const restored = new Uint8Array(targetSnapshot[i]);
-        let pixelCount = 0;
-        for (let p = 0; p < restored.length; p++) {
-          if (restored[p] === 1) pixelCount++;
-        }
-        return {
-          ...m,
-          mask: restored,
-          pixelCount,
-        };
-      }),
-    );
-  }, [canRedo, history, historyIndex]);
-
-  // Toggle visibility of a layer
-  const toggleVisibility = (label: SemanticLabel) => {
-    setVisibleLabels((prev) => {
-      const next = new Set(prev);
-      if (next.has(label)) next.delete(label);
-      else next.add(label);
-      return next;
+    replace({
+      past: [...state.current.past, before].slice(-max),
+      present: owners,
+      future: [],
     });
-  };
-
-  // Reassign all active mask pixels from one layer to another (e.g. from Pelle to Accessori)
-  const handleReassign = (targetLabel: SemanticLabel) => {
-    if (activeLabel === targetLabel) return;
-    const activeMaskIdx = masks.findIndex((m) => m.label === activeLabel);
-    const targetMaskIdx = masks.findIndex((m) => m.label === targetLabel);
-    if (activeMaskIdx === -1 || targetMaskIdx === -1) return;
-
-    const nextMasks = masks.map((m, idx) => {
-      if (idx === activeMaskIdx) {
-        return {
-          ...m,
-          mask: new Uint8Array(width * height),
-          pixelCount: 0,
-        };
-      }
-      if (idx === targetMaskIdx) {
-        const newMask = new Uint8Array(m.mask);
-        const sourceMask = masks[activeMaskIdx].mask;
-        let count = 0;
-        for (let i = 0; i < width * height; i++) {
-          if (sourceMask[i] === 1 || newMask[i] === 1) {
-            newMask[i] = 1;
-            count++;
-          }
-        }
-        return {
-          ...m,
-          mask: newMask,
-          pixelCount: count,
-        };
-      }
-      return m;
-    });
-
-    setMasks(nextMasks);
-    pushHistoryState(nextMasks);
-    setActiveLabel(targetLabel);
-  };
-
-  // Re-render the canvas whenever masks, viewMode, activeLabel, or visibility change
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = context(canvas);
-
-    ctx.clearRect(0, 0, width, height);
-
-    const srcCtx = context(sourceLayer.canvas);
-    const srcImgData = srcCtx.getImageData(0, 0, width, height);
-    const srcData = srcImgData.data;
-
-    if (viewMode === 'composite') {
-      // Draw composite of all visible layers according to hierarchy
-      const outImgData = ctx.createImageData(width, height);
-      const outData = outImgData.data;
-
-      // Bottom to top
-      const reversedMasks = [...masks].reverse();
-      for (const m of reversedMasks) {
-        if (!visibleLabels.has(m.label)) continue;
-        for (let i = 0; i < width * height; i++) {
-          if (m.mask[i] === 1) {
-            const p = i * 4;
-            outData[p] = srcData[p];
-            outData[p + 1] = srcData[p + 1];
-            outData[p + 2] = srcData[p + 2];
-            outData[p + 3] = srcData[p + 3];
-          }
-        }
-      }
-      ctx.putImageData(outImgData, 0, 0);
-    } else if (viewMode === 'solo') {
-      // Draw only the active layer
-      const activeMask = masks.find((m) => m.label === activeLabel);
-      if (activeMask) {
-        const outImgData = ctx.createImageData(width, height);
-        const outData = outImgData.data;
-        for (let i = 0; i < width * height; i++) {
-          if (activeMask.mask[i] === 1) {
-            const p = i * 4;
-            outData[p] = srcData[p];
-            outData[p + 1] = srcData[p + 1];
-            outData[p + 2] = srcData[p + 2];
-            outData[p + 3] = srcData[p + 3];
-          }
-        }
-        ctx.putImageData(outImgData, 0, 0);
-      }
-    } else {
-      // Overlay mode: base image + colored translucent mask overlays
-      ctx.drawImage(sourceLayer.canvas, 0, 0);
-
-      // Create translucent mask color overlay
-      const overlayImgData = ctx.createImageData(width, height);
-      const overlayData = overlayImgData.data;
-
-      for (const m of masks) {
-        if (!visibleLabels.has(m.label)) continue;
-        // Parse hex color
-        const hex = m.colorHex.replace('#', '');
-        const cr = parseInt(hex.substring(0, 2), 16) || 200;
-        const cg = parseInt(hex.substring(2, 4), 16) || 200;
-        const cb = parseInt(hex.substring(4, 6), 16) || 200;
-        const alphaVal = Math.round(overlayAlpha * 255);
-
-        const isCurrent = m.label === activeLabel;
-        const finalAlpha = isCurrent
-          ? Math.min(255, alphaVal + 60)
-          : Math.max(20, alphaVal - 30);
-
-        for (let i = 0; i < width * height; i++) {
-          if (m.mask[i] === 1) {
-            const p = i * 4;
-            overlayData[p] = cr;
-            overlayData[p + 1] = cg;
-            overlayData[p + 2] = cb;
-            overlayData[p + 3] = finalAlpha;
-          }
-        }
-      }
-
-      // Draw overlay onto temporary canvas and blend
-      const tempCanvas = createCanvas(width, height);
-      context(tempCanvas).putImageData(overlayImgData, 0, 0);
-      ctx.drawImage(tempCanvas, 0, 0);
-    }
-  }, [
-    masks,
-    viewMode,
-    activeLabel,
-    visibleLabels,
-    overlayAlpha,
-    sourceLayer.canvas,
-    width,
-    height,
-  ]);
-
-  // Touch and Pointer Drawing Logic
-  const applyBrushToPixel = useCallback(
-    (
-      cx: number,
-      cy: number,
-      radius: number,
-      tool: BrushTool,
-      targetLabel: SemanticLabel,
-    ) => {
-      setMasks((prevMasks) => {
-        const targetIdx = prevMasks.findIndex((m) => m.label === targetLabel);
-        if (targetIdx === -1) return prevMasks;
-
-        const nextMasks = [...prevMasks];
-        const currentTargetMask = new Uint8Array(nextMasks[targetIdx].mask);
-        let countDelta = 0;
-
-        const r2 = radius * radius;
-        const minX = Math.max(0, Math.floor(cx - radius));
-        const maxX = Math.min(width - 1, Math.ceil(cx + radius));
-        const minY = Math.max(0, Math.floor(cy - radius));
-        const maxY = Math.min(height - 1, Math.ceil(cy + radius));
-
-        for (let y = minY; y <= maxY; y++) {
-          const dy = y - cy;
-          for (let x = minX; x <= maxX; x++) {
-            const dx = x - cx;
-            if (dx * dx + dy * dy <= r2) {
-              const idx = y * width + x;
-              if (tool === 'brush') {
-                if (currentTargetMask[idx] === 0) {
-                  currentTargetMask[idx] = 1;
-                  countDelta++;
-                }
-                // When brushing into targetLabel, remove from other body layers to prevent conflicting overlap
-                if (targetLabel !== 'Tratto') {
-                  for (let mIdx = 0; mIdx < nextMasks.length; mIdx++) {
-                    if (
-                      mIdx !== targetIdx &&
-                      nextMasks[mIdx].label !== 'Tratto' &&
-                      nextMasks[mIdx].mask[idx] === 1
-                    ) {
-                      const otherMask = new Uint8Array(nextMasks[mIdx].mask);
-                      otherMask[idx] = 0;
-                      nextMasks[mIdx] = {
-                        ...nextMasks[mIdx],
-                        mask: otherMask,
-                        pixelCount: Math.max(
-                          0,
-                          nextMasks[mIdx].pixelCount - 1,
-                        ),
-                      };
-                    }
-                  }
-                }
-              } else {
-                // Eraser
-                if (currentTargetMask[idx] === 1) {
-                  currentTargetMask[idx] = 0;
-                  countDelta--;
-                }
-              }
-            }
-          }
-        }
-
-        nextMasks[targetIdx] = {
-          ...nextMasks[targetIdx],
-          mask: currentTargetMask,
-          pixelCount: Math.max(
-            0,
-            nextMasks[targetIdx].pixelCount + countDelta,
-          ),
-        };
-
-        return nextMasks;
+  }
+  function undo() {
+    const s = state.current,
+      p = s.past.at(-1);
+    if (p)
+      replace({
+        past: s.past.slice(0, -1),
+        present: p,
+        future: [s.present, ...s.future],
       });
-    },
-    [width, height],
-  );
-
-  const getCanvasCoords = (
-    e: React.PointerEvent<HTMLCanvasElement>,
-  ): { x: number; y: number } | null => {
-    const canvas = canvasRef.current;
-    if (!canvas) return null;
-    const rect = canvas.getBoundingClientRect();
-    const scaleX = width / rect.width;
-    const scaleY = height / rect.height;
+    setSelection(null);
+  }
+  function redo() {
+    const s = state.current,
+      n = s.future[0];
+    if (n)
+      replace({
+        past: [...s.past, s.present],
+        present: n,
+        future: s.future.slice(1),
+      });
+    setSelection(null);
+  }
+  function fit() {
+    const el = viewport.current;
+    if (!el) return;
+    setZoom(
+      Math.max(
+        0.03,
+        Math.min(
+          (el.clientWidth - 32) / width,
+          (el.clientHeight - 32) / height,
+          8,
+        ),
+      ),
+    );
+    setPan({ x: 0, y: 0 });
+  }
+  useLayoutEffect(() => {
+    fit();
+    const observer = new ResizeObserver(fit);
+    if (viewport.current) observer.observe(viewport.current);
+    return () => observer.disconnect();
+  }, [width, height]);
+  useEffect(() => {
+    const c = canvas.current;
+    if (!c) return;
+    const ctx = context(c),
+      image = ctx.createImageData(width, height),
+      out = image.data;
+    const activeIndex = hierarchy.findIndex((h) => h.label === active),
+      hex = hierarchy[activeIndex].colorHex;
+    const tint = [
+      parseInt(hex.slice(1, 3), 16),
+      parseInt(hex.slice(3, 5), 16),
+      parseInt(hex.slice(5, 7), 16),
+    ];
+    for (let i = 0; i < history.present.length; i++) {
+      const owner = history.present[i],
+        p = i * 4;
+      if (owner === EMPTY_PIXEL) continue;
+      const enabled = visible.has(hierarchy[owner].label);
+      if (
+        !selection?.[i] &&
+        ((view === 'solo' && (owner !== activeIndex || !enabled)) ||
+          (view === 'composite' && !enabled))
+      )
+        continue;
+      out.set(data.subarray(p, p + 4), p);
+      if (view === 'overlay' && owner === activeIndex && enabled) {
+        for (let ch = 0; ch < 3; ch++)
+          out[p + ch] = Math.round(data[p + ch] * 0.6 + tint[ch] * 0.4);
+      }
+      if (selection?.[i]) {
+        out[p] = Math.round(out[p] * 0.35 + 255 * 0.65);
+        out[p + 1] = Math.round(out[p + 1] * 0.35 + 213 * 0.65);
+        out[p + 2] = Math.round(out[p + 2] * 0.35 + 85 * 0.65);
+        out[p + 3] = data[p + 3];
+      }
+    }
+    ctx.putImageData(image, 0, 0);
+  }, [history.present, active, view, visible, selection, data, width, height]);
+  function imagePoint(point: Point) {
+    const r = paper.current!.getBoundingClientRect();
     return {
-      x: (e.clientX - rect.left) * scaleX,
-      y: (e.clientY - rect.top) * scaleY,
+      x: (point.x - r.left) / zoomRef.current,
+      y: (point.y - r.top) / zoomRef.current,
     };
-  };
-
-  const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (viewMode === 'composite') return;
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
-    isDrawing.current = true;
-    const coords = getCanvasCoords(e);
-    if (!coords) return;
-    lastPos.current = coords;
-    applyBrushToPixel(
-      coords.x,
-      coords.y,
-      brushSize,
-      brushTool,
-      activeLabel,
+  }
+  function inside(p: Point) {
+    return p.x >= 0 && p.y >= 0 && p.x < width && p.y < height;
+  }
+  function selectLabel(label: SemanticLabel) {
+    setActive(label);
+    setVisible((v) => new Set([...v, label]));
+  }
+  function down(e: ReactPointerEvent<HTMLDivElement>) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const client = { x: e.clientX, y: e.clientY };
+    points.current.set(e.pointerId, client);
+    if (points.current.size === 2) {
+      const old = gesture.current;
+      if (old?.mode === 'brush') draft(old.before);
+      setPath([]);
+      const [a, b] = [...points.current.values()];
+      gesture.current = {
+        mode: 'pinch',
+        start: client,
+        last: client,
+        points: [],
+        pan,
+        before: state.current.present,
+        distance: Math.hypot(a.x - b.x, a.y - b.y),
+        zoom: zoomRef.current,
+        center: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 },
+        pointer: e.pointerId,
+      };
+      return;
+    }
+    if (points.current.size !== 1) return;
+    const p = imagePoint(client);
+    const g: Gesture = {
+      mode: tool,
+      start: client,
+      last: p,
+      points: [p],
+      pan,
+      before: state.current.present,
+      pointer: e.pointerId,
+    };
+    gesture.current = g;
+    if (tool === 'pan' || view === 'composite') {
+      g.mode = 'pan';
+      return;
+    }
+    if (!inside(p)) {
+      gesture.current = null;
+      return;
+    }
+    if (tool === 'lasso') {
+      setPath([p]);
+      return;
+    }
+    if (tool === 'brush') {
+      setSelection(null);
+      draft(
+        paintOwners(
+          state.current.present,
+          data,
+          width,
+          height,
+          p,
+          p,
+          diameter / 2 / zoomRef.current,
+          target,
+          hierarchy,
+        ),
+      );
+    }
+  }
+  function move(e: ReactPointerEvent<HTMLDivElement>) {
+    if (!points.current.has(e.pointerId)) return;
+    const client = { x: e.clientX, y: e.clientY };
+    points.current.set(e.pointerId, client);
+    const g = gesture.current;
+    if (!g) return;
+    if (g.mode === 'pinch') {
+      if (points.current.size < 2) return;
+      const [a, b] = [...points.current.values()],
+        center = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      const next = Math.max(
+        0.03,
+        Math.min(
+          8,
+          (g.zoom! * Math.hypot(a.x - b.x, a.y - b.y)) /
+            Math.max(1, g.distance!),
+        ),
+      );
+      const r = viewport.current!.getBoundingClientRect(),
+        origin = { x: r.left + r.width / 2, y: r.top + r.height / 2 },
+        ratio = next / g.zoom!;
+      setZoom(next);
+      setPan({
+        x: center.x - origin.x - (g.center!.x - origin.x - g.pan.x) * ratio,
+        y: center.y - origin.y - (g.center!.y - origin.y - g.pan.y) * ratio,
+      });
+      return;
+    }
+    if (g.mode === 'pan') {
+      setPan({
+        x: g.pan.x + client.x - g.start.x,
+        y: g.pan.y + client.y - g.start.y,
+      });
+      return;
+    }
+    const p = imagePoint(client);
+    if (
+      g.mode === 'lasso' &&
+      Math.hypot(p.x - g.last.x, p.y - g.last.y) * zoomRef.current > 2
+    ) {
+      g.points.push(p);
+      setPath([...g.points]);
+    }
+    if (g.mode === 'brush')
+      draft(
+        paintOwners(
+          state.current.present,
+          data,
+          width,
+          height,
+          g.last,
+          p,
+          diameter / 2 / zoomRef.current,
+          target,
+          hierarchy,
+        ),
+      );
+    g.last = p;
+  }
+  function end(e: ReactPointerEvent<HTMLDivElement>, cancelled = false) {
+    if (!points.current.has(e.pointerId)) return;
+    points.current.delete(e.pointerId);
+    const g = gesture.current;
+    gesture.current = null;
+    if (g) {
+      const p = imagePoint({ x: e.clientX, y: e.clientY });
+      if (g.mode === 'brush') {
+        if (cancelled) draft(g.before);
+        else commit(state.current.present, g.before);
+      } else if (!cancelled && g.mode === 'lasso' && g.points.length >= 3) {
+        setSelection(selectionPolygon(g.points, width, height));
+        regionSeed.current = null;
+      } else if (
+        !cancelled &&
+        g.mode === 'region' &&
+        inside(p) &&
+        Math.hypot(e.clientX - g.start.x, e.clientY - g.start.y) < 12
+      ) {
+        regionSeed.current = p;
+        setSelection(selectConnectedRegion(data, width, height, p, tolerance));
+      } else if (
+        !cancelled &&
+        g.mode === 'pick' &&
+        inside(p) &&
+        Math.hypot(e.clientX - g.start.x, e.clientY - g.start.y) < 12
+      ) {
+        const index =
+          state.current.present[Math.floor(p.y) * width + Math.floor(p.x)];
+        if (index !== EMPTY_PIXEL) selectLabel(hierarchy[index].label);
+      }
+    }
+    setPath([]);
+    if (e.currentTarget.hasPointerCapture(e.pointerId))
+      e.currentTarget.releasePointerCapture(e.pointerId);
+  }
+  function assign() {
+    if (!selection) return;
+    commit(
+      assignSelection(
+        state.current.present,
+        selection,
+        data,
+        target,
+        hierarchy,
+      ),
     );
-  };
-
-  const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!isDrawing.current) return;
-    const coords = getCanvasCoords(e);
-    if (!coords) return;
-
-    // Interpolate between lastPos and coords to ensure continuous stroke
-    const prev = lastPos.current || coords;
-    const dist = Math.hypot(coords.x - prev.x, coords.y - prev.y);
-    const steps = Math.max(1, Math.ceil(dist / (brushSize * 0.4)));
-
-    for (let s = 1; s <= steps; s++) {
-      const ix = prev.x + (coords.x - prev.x) * (s / steps);
-      const iy = prev.y + (coords.y - prev.y) * (s / steps);
-      applyBrushToPixel(ix, iy, brushSize, brushTool, activeLabel);
-    }
-
-    lastPos.current = coords;
-  };
-
-  const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!isDrawing.current) return;
-    isDrawing.current = false;
-    lastPos.current = null;
-    try {
-      (e.target as HTMLElement).releasePointerCapture(e.pointerId);
-    } catch {
-      // ignore
-    }
-    // Commit stroke to history
-    pushHistoryState(masks);
-  };
-
-  const handleCommitLayers = () => {
-    const generated = buildProjectLayersFromMasks(sourceLayer, masks);
-    onApply(generated);
-  };
-
-  const totalFgPixels = masks.reduce(
-    (acc, m) => (m.label !== 'Tratto' ? acc + m.pixelCount : acc),
-    0,
-  );
-
+    setSelection(null);
+    regionSeed.current = null;
+    setNotice(`Zona assegnata a ${partName(target)}.`);
+  }
+  const tools: { id: Tool; label: string; icon: typeof Hand }[] = [
+    { id: 'pick', label: 'Seleziona parte', icon: MousePointer2 },
+    { id: 'region', label: 'Zona', icon: WandSparkles },
+    { id: 'lasso', label: 'Lazo', icon: LassoSelect },
+    { id: 'brush', label: 'Pennello', icon: Paintbrush },
+    { id: 'pan', label: 'Naviga', icon: Hand },
+  ];
+  const hint =
+    tool === 'pick'
+      ? 'Tocca l’immagine per selezionare la parte presente in quel punto.'
+      : tool === 'region'
+        ? 'Tocca una zona di colore simile, controlla l’evidenziazione gialla e poi assegnala alla parte scelta.'
+        : tool === 'lasso'
+          ? 'Disegna un contorno intorno alla zona. Controlla la selezione e assegnala alla parte scelta.'
+          : tool === 'brush'
+            ? 'Dipingi sulla parte scelta. Togli sposta i pixel in “Da assegnare”, senza cancellarli.'
+            : 'Trascina per navigare. Usa due dita per ingrandire senza dipingere.';
   return (
-    <div className="semantic-studio">
+    <div className="semantic-studio precision-studio">
       <div className="studio-topbar">
-        <div className="studio-badge-group">
-          <span className="ai-badge">
-            <Sparkles size={14} />
-            {modelUsed}
-          </span>
-          {isMock && (
-            <span className="test-badge">
-              <ShieldCheck size={14} />
-              Verifica Test Fallback (Dichiarata)
-            </span>
-          )}
+        <div>
+          <strong>
+            {isMock
+              ? 'Esempio geometrico · nessuna analisi AI'
+              : modelUsed === 'Livelli esistenti'
+                ? 'Rifinisci le selezioni esistenti'
+                : `Contorni da verificare · ${modelUsed}`}
+          </strong>
+          <p>
+            {counts[unassigned].toLocaleString('it-IT')} pixel da assegnare.
+            Controlla anche le parti già riconosciute.
+            {warning && <span role="status"> {warning}</span>}
+          </p>
         </div>
         <div className="history-group">
           <button
             type="button"
             className="icon-button"
-            disabled={!canUndo}
-            onClick={handleUndo}
-            title="Annulla modifica maschera"
-            aria-label="Annulla"
+            aria-label="Annulla correzione"
+            disabled={!history.past.length}
+            onClick={undo}
           >
             <Undo2 size={18} />
           </button>
           <button
             type="button"
             className="icon-button"
-            disabled={!canRedo}
-            onClick={handleRedo}
-            title="Ripristina modifica maschera"
-            aria-label="Ripristina"
+            aria-label="Ripristina correzione"
+            disabled={!history.future.length}
+            onClick={redo}
           >
             <Redo2 size={18} />
           </button>
         </div>
       </div>
-
-      <div className="studio-main-grid">
-        {/* Left Column: 9-Tier Layer Hierarchy List */}
-        <div className="hierarchy-panel">
-          <div className="hierarchy-header">
-            <strong>Gerarchia Livelli Fresco</strong>
-            <small>Dall’alto verso il basso (1 → 9)</small>
-          </div>
-          <div className="hierarchy-list" role="radiogroup">
-            {masks.map((maskItem, idx) => {
-              const isSelected = maskItem.label === activeLabel;
-              const isVisible = visibleLabels.has(maskItem.label);
-              const percentage =
-                totalFgPixels > 0
-                  ? ((maskItem.pixelCount / totalFgPixels) * 100).toFixed(1)
-                  : '0';
-
-              return (
-                <div
-                  key={maskItem.label}
-                  className={`hierarchy-row ${isSelected ? 'selected' : ''}`}
-                  onClick={() => setActiveLabel(maskItem.label)}
-                >
-                  <button
-                    type="button"
-                    className="vis-btn"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      toggleVisibility(maskItem.label);
-                    }}
-                    title={isVisible ? 'Nascondi livello' : 'Mostra livello'}
-                  >
-                    {isVisible ? <Eye size={16} /> : <EyeOff size={16} />}
-                  </button>
-                  <span
-                    className="color-swatch"
-                    style={{ backgroundColor: maskItem.colorHex }}
-                  />
-                  <div className="hierarchy-info">
-                    <div className="row-title">
-                      <span className="tier-num">{idx + 1}.</span>
-                      <strong>{maskItem.name}</strong>
-                    </div>
-                    <span className="pixel-stat">
-                      {maskItem.pixelCount.toLocaleString('it-IT')} px{' '}
-                      {maskItem.label !== 'Tratto' && `(${percentage}%)`}
-                    </span>
-                  </div>
-                </div>
-              );
-            })}
-
-            {/* Hidden original layer indicator */}
-            <div className="hierarchy-row hidden-original">
-              <span className="vis-btn muted">
-                <EyeOff size={16} />
-              </span>
-              <span className="color-swatch orig-swatch" />
-              <div className="hierarchy-info">
-                <div className="row-title">
-                  <span className="tier-num">9.</span>
-                  <strong>Originale (Recupero)</strong>
-                </div>
-                <span className="pixel-stat">
-                  Livello intatto per ripristino sicuro
-                </span>
-              </div>
-            </div>
-          </div>
-
-          {/* Quick Reassign Section */}
-          <div className="reassign-section">
-            <span className="section-label">
-              <ArrowRightLeft size={13} />
-              Riassegna tutto a un altro livello:
-            </span>
-            <div className="reassign-buttons">
-              {['Accessori', 'Capelli', 'Pelle', 'Vestiti'].map((target) => (
+      <div className="precision-main">
+        <aside className="precision-parts" aria-label="Parti del personaggio">
+          <p>Scegli la parte a cui assegnare i pixel</p>
+          <div className="precision-part-list">
+            {hierarchy.map((h, i) => (
+              <div
+                key={h.label}
+                className={`precision-part ${active === h.label ? 'selected' : ''}`}
+              >
                 <button
-                  key={target}
+                  className="precision-part-pick"
                   type="button"
-                  className="reassign-chip"
-                  disabled={activeLabel === target}
-                  onClick={() => handleReassign(target as SemanticLabel)}
+                  aria-label={`Seleziona parte ${displayPartName(h)}`}
+                  aria-pressed={active === h.label}
+                  onClick={() => selectLabel(h.label)}
                 >
-                  → {target}
+                  <i style={{ background: h.colorHex }} />
+                  <span>
+                    <strong>{displayPartName(h)}</strong>
+                    <small>
+                      {counts[i].toLocaleString('it-IT')} px
+                      {!counts[i] ? ' · vuoto' : ''}
+                    </small>
+                  </span>
+                </button>
+                <button
+                  className="icon-button"
+                  type="button"
+                  aria-label={`${visible.has(h.label) ? 'Nascondi' : 'Mostra'} parte ${displayPartName(h)}`}
+                  onClick={() =>
+                    setVisible((v) => {
+                      const n = new Set(v);
+                      if (n.has(h.label)) n.delete(h.label);
+                      else n.add(h.label);
+                      return n;
+                    })
+                  }
+                >
+                  {visible.has(h.label) ? (
+                    <Eye size={16} />
+                  ) : (
+                    <EyeOff size={16} />
+                  )}
+                </button>
+              </div>
+            ))}
+          </div>
+          <p className="precision-original">
+            Originale intatto conservato nel progetto.
+          </p>
+        </aside>
+        <div className="precision-work">
+          <div
+            className="precision-tools"
+            role="group"
+            aria-label="Strumenti di selezione"
+          >
+            {tools.map(({ id, label, icon: Icon }) => (
+              <button
+                type="button"
+                key={id}
+                className={`tool-chip ${tool === id ? 'active' : ''}`}
+                aria-pressed={tool === id}
+                onClick={() => {
+                  setTool(id);
+                  if (id !== 'pan' && view === 'composite') setView('overlay');
+                  setPath([]);
+                }}
+              >
+                <Icon size={17} />
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="precision-options">
+            <div className="view-mode-toggle">
+              {[
+                { id: 'overlay', label: 'Selezione' },
+                { id: 'solo', label: 'Isola parte' },
+                { id: 'composite', label: 'Risultato' },
+              ].map((v) => (
+                <button
+                  key={v.id}
+                  type="button"
+                  className={`tab-btn ${view === v.id ? 'active' : ''}`}
+                  aria-pressed={view === v.id}
+                  onClick={() => setView(v.id as typeof view)}
+                >
+                  {v.label}
                 </button>
               ))}
             </div>
-          </div>
-        </div>
-
-        {/* Center / Right Column: Touch Refinement Canvas */}
-        <div className="canvas-view-column">
-          {/* View Mode & Brush Toolbar */}
-          <div className="studio-canvas-toolbar">
-            <div className="view-mode-toggle">
-              <button
-                type="button"
-                className={`tab-btn ${viewMode === 'overlay' ? 'active' : ''}`}
-                onClick={() => setViewMode('overlay')}
-              >
-                Mappa Maschere
-              </button>
-              <button
-                type="button"
-                className={`tab-btn ${viewMode === 'solo' ? 'active' : ''}`}
-                onClick={() => setViewMode('solo')}
-              >
-                Isola Livello
-              </button>
-              <button
-                type="button"
-                className={`tab-btn ${viewMode === 'composite' ? 'active' : ''}`}
-                onClick={() => setViewMode('composite')}
-              >
-                Anteprima Fresco
-              </button>
-            </div>
-
-            <div className="brush-controls">
-              <button
-                type="button"
-                className={`tool-chip ${brushTool === 'brush' ? 'active' : ''}`}
-                onClick={() => setBrushTool('brush')}
-                title="Aggiungi pixel col pennello"
-              >
-                <Paintbrush size={15} />
-                Aggiungi
-              </button>
-              <button
-                type="button"
-                className={`tool-chip ${brushTool === 'eraser' ? 'active' : ''}`}
-                onClick={() => setBrushTool('eraser')}
-                title="Sottrai pixel con la gomma"
-              >
-                <Eraser size={15} />
-                Sottrai
-              </button>
-              <div className="size-slider-box">
-                <span>Dimensione: {brushSize}px</span>
-                <input
-                  type="range"
-                  min="4"
-                  max="48"
-                  value={brushSize}
-                  onChange={(e) => setBrushSize(Number(e.target.value))}
-                />
+            {['region', 'lasso', 'brush'].includes(tool) && (
+              <div className="precision-action">
+                <button
+                  type="button"
+                  className={`tab-btn ${action === 'add' ? 'active' : ''}`}
+                  aria-pressed={action === 'add'}
+                  onClick={() => setAction('add')}
+                >
+                  Aggiungi
+                </button>
+                <button
+                  type="button"
+                  className={`tab-btn ${action === 'remove' ? 'active' : ''}`}
+                  aria-pressed={action === 'remove'}
+                  onClick={() => setAction('remove')}
+                >
+                  Togli
+                </button>
               </div>
+            )}
+          </div>
+          {tool === 'region' && (
+            <label className="precision-slider">
+              Tolleranza zona <output>{tolerance}</output>
+              <input
+                aria-label="Tolleranza zona"
+                type="range"
+                min="5"
+                max="100"
+                value={tolerance}
+                onChange={(e) => {
+                  const n = Number(e.target.value);
+                  setTolerance(n);
+                  if (regionSeed.current)
+                    setSelection(
+                      selectConnectedRegion(
+                        data,
+                        width,
+                        height,
+                        regionSeed.current,
+                        n,
+                      ),
+                    );
+                }}
+              />
+            </label>
+          )}
+          {tool === 'brush' && (
+            <label className="precision-slider">
+              Diametro sullo schermo <output>{diameter} px</output>
+              <input
+                aria-label="Diametro pennello"
+                type="range"
+                min="4"
+                max="80"
+                value={diameter}
+                onChange={(e) => setDiameter(Number(e.target.value))}
+              />
+            </label>
+          )}
+          <div
+            className={`precision-viewport checker tool-${tool}`}
+            ref={viewport}
+            onPointerDown={down}
+            onPointerMove={move}
+            onPointerUp={(e) => end(e)}
+            onPointerCancel={(e) => end(e, true)}
+            onLostPointerCapture={(e) => {
+              if (points.current.has(e.pointerId)) end(e, true);
+            }}
+          >
+            <div
+              ref={paper}
+              className="precision-paper"
+              style={{
+                width,
+                height,
+                transform: `translate(-50%, -50%) translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+              }}
+            >
+              <canvas
+                ref={canvas}
+                width={width}
+                height={height}
+                aria-label="Immagine per rifinire le selezioni"
+              />
+              <svg width={width} height={height}>
+                <polyline
+                  points={path.map((p) => `${p.x},${p.y}`).join(' ')}
+                  fill="rgba(255,213,85,.15)"
+                  stroke="#f5b800"
+                  strokeWidth={2 / zoom}
+                />
+              </svg>
             </div>
           </div>
-
-          {/* Interactive Canvas Box */}
-          <div className="studio-canvas-wrapper checker">
-            <canvas
-              ref={canvasRef}
-              width={width}
-              height={height}
-              className={`refine-canvas ${viewMode !== 'composite' ? 'brushing' : ''}`}
-              onPointerDown={handlePointerDown}
-              onPointerMove={handlePointerMove}
-              onPointerUp={handlePointerUp}
-              onPointerCancel={handlePointerUp}
-            />
-          </div>
-
-          <div className="touch-hint">
-            <Info size={14} />
+          <div className="precision-bottom">
             <span>
-              Tocca e trascina con il dito o Apple Pencil per ritoccare la
-              maschera di <strong>{activeLabel}</strong>. La separazione
-              garantisce zero perdita di pixel.
+              Parte attiva: <strong>{partName(active)}</strong>
             </span>
+            <div className="zoom-controls">
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="Riduci zoom selezione"
+                onClick={() => setZoom((z) => Math.max(0.03, z / 1.4))}
+              >
+                <Minus size={17} />
+              </button>
+              <output>{Math.round(zoom * 100)}%</output>
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="Aumenta zoom selezione"
+                onClick={() => setZoom((z) => Math.min(8, z * 1.4))}
+              >
+                <Plus size={17} />
+              </button>
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="Adatta immagine selezione"
+                onClick={fit}
+              >
+                <Maximize size={17} />
+              </button>
+            </div>
           </div>
+          {selection && (
+            <div className="precision-pending" role="status">
+              <span>
+                {selectionCount.toLocaleString('it-IT')} pixel selezionati
+              </span>
+              <button
+                type="button"
+                className="button secondary"
+                disabled={!selectionCount}
+                onClick={assign}
+              >
+                Assegna a {partName(target)}
+                <Check size={16} />
+              </button>
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="Svuota selezione"
+                onClick={() => {
+                  setSelection(null);
+                  regionSeed.current = null;
+                }}
+              >
+                <X size={17} />
+              </button>
+            </div>
+          )}
+          <p className="precision-hint">{hint}</p>
         </div>
       </div>
-
+      {notice && (
+        <p className="success-text" role="status">
+          {notice}
+        </p>
+      )}
       <div className="modal-footer studio-footer">
         <button type="button" className="button secondary" onClick={onBack}>
-          <RotateCcw size={16} />
-          Torna alle opzioni
+          <RotateCcw size={17} />
+          Opzioni analisi
         </button>
         <button
           type="button"
           className="button primary"
-          onClick={handleCommitLayers}
+          onClick={() =>
+            onApply(
+              buildProjectLayersFromMasks(
+                sourceLayer,
+                masksFromOwners(state.current.present, hierarchy),
+                inventory,
+              ),
+            )
+          }
         >
-          Applica Livelli a FrescoLayers
+          Applica selezioni
           <Check size={18} />
         </button>
       </div>

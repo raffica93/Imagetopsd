@@ -12,7 +12,6 @@ import {
   Check,
   RotateCcw,
   Sparkles,
-  ShieldCheck,
   User,
   Wand2,
 } from 'lucide-react';
@@ -21,16 +20,17 @@ import type { ExtractionOptions, ExtractionResult } from '../utils/extraction';
 import { createCanvas, context, makeLayer } from '../utils/canvasHelpers';
 import { Modal } from './Modal';
 import { SemanticRefinementStudio } from './SemanticRefinementStudio';
-import type {
-  SemanticPart,
-  SemanticRefinementMask,
-} from '../utils/semanticSegmentation';
+import { SemanticDiscovery } from './SemanticDiscovery';
+import type { DiscoveredSelection } from './SemanticDiscovery';
 import {
   initializeSemanticRefinementMasks,
+  restoreGroupMasks,
 } from '../utils/semanticSegmentation';
 import {
   generateWarriorSampleCanvas,
   generateMageSampleCanvas,
+  getWarriorSemanticGroundTruth,
+  getMageSemanticGroundTruth,
 } from '../utils/characterPrototypes';
 
 export type CombinedExtractionMode = 'semantic' | 'objects' | 'colors';
@@ -39,12 +39,15 @@ export function ExtractModal({
   layer,
   onClose,
   onApply,
+  existingLayers = [],
 }: {
   layer: LayerItem;
+  existingLayers?: LayerItem[];
   onClose: () => void;
   onApply: (layers: LayerItem[]) => boolean;
 }) {
-  const [selectedMode, setSelectedMode] = useState<CombinedExtractionMode>('semantic');
+  const [selectedMode, setSelectedMode] =
+    useState<CombinedExtractionMode>('semantic');
 
   // Options for objects & colors
   const [options, setOptions] = useState<ExtractionOptions>({
@@ -54,21 +57,10 @@ export function ExtractModal({
     colors: 6,
   });
 
-  // Options for semantic AI separation
-  const [modelId, setModelId] = useState('gemini-3.8-flash');
-  const [consent, setConsent] = useState(true);
-  const [useMockDemo, setUseMockDemo] = useState(false);
-  const [userApiKey, setUserApiKey] = useState(() => {
-    try {
-      return localStorage.getItem('fresco_gemini_key') || '';
-    } catch {
-      return '';
-    }
-  });
-  const [showKeyField, setShowKeyField] = useState(false);
   const [workingLayer, setWorkingLayer] = useState<LayerItem>(layer);
 
   const [busy, setBusy] = useState(false);
+  const [discoveryStarted, setDiscoveryStarted] = useState(false);
   const [error, setError] = useState('');
 
   // Result for objects / colors
@@ -78,16 +70,25 @@ export function ExtractModal({
   } | null>(null);
 
   // Result for semantic refinement studio
-  const [semanticStudioData, setSemanticStudioData] = useState<{
-    masks: SemanticRefinementMask[];
-    isMock: boolean;
-    modelUsed: string;
-  } | null>(null);
+  const [semanticStudioData, setSemanticStudioData] =
+    useState<DiscoveredSelection | null>(() =>
+      existingLayers.length
+        ? {
+            masks: restoreGroupMasks(layer, existingLayers),
+            isMock: false,
+            modelUsed: 'Livelli esistenti',
+            inventory: layer.semanticInventory,
+          }
+        : null,
+    );
 
   const worker = useRef<Worker | null>(null);
   const timer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
+    try {
+      localStorage.removeItem('fresco_gemini_key');
+    } catch {}
     return () => {
       worker.current?.terminate();
       clearTimeout(timer.current);
@@ -101,89 +102,32 @@ export function ExtractModal({
     setBusy(false);
   }
 
-  // Load sample prototype character into workingLayer
-  const loadPrototype = (type: 'warrior' | 'mage') => {
+  function loadPrototype(type: 'warrior' | 'mage') {
     const canvas =
       type === 'warrior'
         ? generateWarriorSampleCanvas()
         : generateMageSampleCanvas();
-    const name = type === 'warrior' ? 'Guerriero con Spada' : 'Maga Anime';
-    const newLayer = makeLayer(canvas, name, workingLayer.x, workingLayer.y);
-    newLayer.width = workingLayer.width;
-    newLayer.height = workingLayer.height;
-    setWorkingLayer(newLayer);
-    setError('');
-    setClassicResult(null);
-    setSemanticStudioData(null);
-  };
-
-  // Run Semantic Anatomical AI Separation
-  async function runSemanticSeparation() {
-    setError('');
-    setBusy(true);
-
-    try {
-      const canvas = workingLayer.canvas;
-      const base64 = canvas.toDataURL('image/png');
-
-      const isWarrior = workingLayer.name.toLowerCase().includes('guerriero');
-      const isMage = workingLayer.name.toLowerCase().includes('maga');
-      const demoType = isMage ? 'mage' : isWarrior ? 'warrior' : undefined;
-
-      try {
-        if (userApiKey) {
-          localStorage.setItem('fresco_gemini_key', userApiKey.trim());
-        }
-      } catch {
-        // ignore
-      }
-
-      const res = await fetch('/api/segment-semantic', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          image: base64,
-          modelId,
-          consent,
-          useMockDemo,
-          demoType,
-          userApiKey: userApiKey.trim() || undefined,
-        }),
-      });
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        throw new Error(data.error || 'Errore durante la separazione semantica.');
-      }
-
-      const parts: SemanticPart[] = data.parts || [];
-      if (!parts.length) {
-        throw new Error(
-          'Nessuna componente anatomica identificata con certezza. Prova a regolare i contorni o seleziona un’altra modalità.',
-        );
-      }
-
-      const ctx = context(canvas);
-      const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const masks = initializeSemanticRefinementMasks(
-        imgData.data,
+    const source = makeLayer(
+      canvas,
+      type === 'warrior' ? 'Guerriero con Spada' : 'Maga Anime',
+      workingLayer.x,
+      workingLayer.y,
+    );
+    source.width = workingLayer.width;
+    source.height = workingLayer.height;
+    setWorkingLayer(source);
+    setSemanticStudioData({
+      masks: initializeSemanticRefinementMasks(
+        context(canvas).getImageData(0, 0, canvas.width, canvas.height).data,
         canvas.width,
         canvas.height,
-        parts,
-      );
-
-      setSemanticStudioData({
-        masks,
-        isMock: Boolean(data.isMock),
-        modelUsed: data.modelUsed || modelId,
-      });
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setError(msg);
-    } finally {
-      setBusy(false);
-    }
+        type === 'warrior'
+          ? getWarriorSemanticGroundTruth()
+          : getMageSemanticGroundTruth(),
+      ),
+      isMock: true,
+      modelUsed: 'Esempio geometrico, senza AI',
+    });
   }
 
   // Run classic worker (objects or colors)
@@ -284,12 +228,14 @@ export function ExtractModal({
   // If semantic refinement studio is open, render it inside the modal
   if (semanticStudioData) {
     return (
-      <Modal title="Rifinitura Livelli Fresco (Touch & Apple Pencil)" onClose={onClose} wide>
+      <Modal title="Rifinisci le selezioni" onClose={onClose} wide full>
         <SemanticRefinementStudio
           sourceLayer={workingLayer}
           initialMasks={semanticStudioData.masks}
           isMock={semanticStudioData.isMock}
           modelUsed={semanticStudioData.modelUsed}
+          warning={semanticStudioData.warning}
+          inventory={semanticStudioData.inventory}
           onApply={(generatedLayers) => {
             if (onApply(generatedLayers)) {
               onClose();
@@ -304,167 +250,96 @@ export function ExtractModal({
   return (
     <Modal title="Separa in livelli" onClose={onClose} wide>
       <p className="modal-intro">
-        Lavora su <strong>{workingLayer.name}</strong>. Gli altri livelli restano al loro posto.
+        Lavora su <strong>{workingLayer.name}</strong>. Gli altri livelli
+        restano al loro posto.
       </p>
 
       {!classicResult ? (
         <>
           {/* 3 Modes */}
-          <div
-            className="mode-cards three-modes"
-            role="group"
-            aria-label="Metodo di separazione"
-          >
-            <button
-              type="button"
-              className={`mode-card semantic-mode-card ${selectedMode === 'semantic' ? 'chosen' : ''}`}
-              disabled={busy}
-              aria-pressed={selectedMode === 'semantic'}
-              onClick={() => setSelectedMode('semantic')}
+          {!(selectedMode === 'semantic' && discoveryStarted) && (
+            <div
+              className="mode-cards three-modes"
+              role="group"
+              aria-label="Metodo di separazione"
             >
-              <div className="mode-card-header">
-                <Sparkles size={22} className="ai-accent-icon" />
-                <span className="free-tier-chip">Google Free Tier</span>
-              </div>
-              <strong>Anatomica (Personaggi / AI)</strong>
-              <span>
-                Isola Tratto, Accessori, Occhi, Bocca, Capelli, Pelle e Vestiti.
-              </span>
-            </button>
+              <button
+                type="button"
+                className={`mode-card semantic-mode-card ${selectedMode === 'semantic' ? 'chosen' : ''}`}
+                disabled={busy}
+                aria-pressed={selectedMode === 'semantic'}
+                onClick={() => setSelectedMode('semantic')}
+              >
+                <div className="mode-card-header">
+                  <Sparkles size={22} className="ai-accent-icon" />
+                  <span className="free-tier-chip">Google Free Tier</span>
+                </div>
+                <strong>Parti del soggetto (AI)</strong>
+                <span>
+                  Riconosce le parti, le seleziona e ordina i livelli.
+                </span>
+              </button>
 
-            <button
-              type="button"
-              className={`mode-card ${selectedMode === 'objects' ? 'chosen' : ''}`}
-              disabled={busy}
-              aria-pressed={selectedMode === 'objects'}
-              onClick={() => setSelectedMode('objects')}
-            >
-              <Shapes size={22} />
-              <strong>Oggetti separati</strong>
-              <span>Sticker e soggetti che non si toccano.</span>
-            </button>
+              <button
+                type="button"
+                className={`mode-card ${selectedMode === 'objects' ? 'chosen' : ''}`}
+                disabled={busy}
+                aria-pressed={selectedMode === 'objects'}
+                onClick={() => setSelectedMode('objects')}
+              >
+                <Shapes size={22} />
+                <strong>Oggetti separati</strong>
+                <span>Sticker e soggetti che non si toccano.</span>
+              </button>
 
-            <button
-              type="button"
-              className={`mode-card ${selectedMode === 'colors' ? 'chosen' : ''}`}
-              disabled={busy}
-              aria-pressed={selectedMode === 'colors'}
-              onClick={() => setSelectedMode('colors')}
-            >
-              <Palette size={22} />
-              <strong>Per colore</strong>
-              <span>Illustrazioni con tinte distinte (K-means).</span>
-            </button>
-          </div>
+              <button
+                type="button"
+                className={`mode-card ${selectedMode === 'colors' ? 'chosen' : ''}`}
+                disabled={busy}
+                aria-pressed={selectedMode === 'colors'}
+                onClick={() => setSelectedMode('colors')}
+              >
+                <Palette size={22} />
+                <strong>Per colore</strong>
+                <span>Illustrazioni con tinte distinte (K-means).</span>
+              </button>
+            </div>
+          )}
 
           {/* Mode-specific settings */}
           {selectedMode === 'semantic' ? (
             <div className="semantic-options-container">
-              {/* Prototipi veloci */}
-              <div className="prototype-strip">
-                <span className="strip-title">
-                  <User size={14} />
-                  Prototipi dimostrativi inclusi:
-                </span>
-                <div className="prototype-buttons">
-                  <button
-                    type="button"
-                    className="prototype-pill"
-                    disabled={busy}
-                    onClick={() => loadPrototype('warrior')}
-                  >
-                    Guerriero con Spada (Foto Utente)
-                  </button>
-                  <button
-                    type="button"
-                    className="prototype-pill"
-                    disabled={busy}
-                    onClick={() => loadPrototype('mage')}
-                  >
-                    <Wand2 size={13} />
-                    Maga Anime con Bacchetta
-                  </button>
-                </div>
-              </div>
-
-              {/* Model selection & Free Tier info */}
-              <div className="form-grid">
-                <label className="form-field">
-                  Modello AI (Free Tier)
-                  <select
-                    value={modelId}
-                    disabled={busy}
-                    onChange={(e) => setModelId(e.target.value)}
-                  >
-                    <option value="gemini-3.8-flash">gemini-3.8-flash (Consigliato Free Tier)</option>
-                    <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite</option>
-                    <option value="gemini-flash-latest">gemini-flash-latest</option>
-                  </select>
-                </label>
-
-                <div className="form-field">
-                  <span>Opzione Verifica Offline</span>
-                  <label className="checkbox-label">
-                    <input
-                      type="checkbox"
-                      checked={useMockDemo}
+              <SemanticDiscovery
+                layer={workingLayer}
+                onReady={setSemanticStudioData}
+                onBusyChange={setBusy}
+                onInventoryChange={setDiscoveryStarted}
+              />
+              {!discoveryStarted && (
+                <details className="discovery-examples">
+                  <summary>Esempi geometrici senza AI</summary>
+                  <div className="prototype-buttons">
+                    <button
+                      type="button"
+                      className="prototype-pill"
                       disabled={busy}
-                      onChange={(e) => setUseMockDemo(e.target.checked)}
-                    />
-                    <span>Test dimostrativo offline (dichiarato)</span>
-                  </label>
-                </div>
-              </div>
-
-              {/* Optional Custom API Key accordion */}
-              <div className="api-key-config-box">
-                <button
-                  type="button"
-                  className="link-button key-toggle-btn"
-                  onClick={() => setShowKeyField(!showKeyField)}
-                >
-                  {showKeyField
-                    ? '▲ Nascondi impostazioni chiave'
-                    : '▼ Chiave API Google AI Free Tier (Opzionale / Personale)'}
-                </button>
-                {showKeyField && (
-                  <div className="key-input-container">
-                    <p className="note-text">
-                      L'app usa automaticamente la chiave <strong>Google AI Free Tier</strong> dell'ambiente con modello <code>gemini-3.8-flash</code> (quota gratuita, zero billing). Se desideri usare la quota del tuo account Google AI Studio, incolla qui la tua API Key personale:
-                    </p>
-                    <input
-                      type="password"
-                      placeholder="Incolla API Key Google AI (es. AIzaSy...)"
-                      value={userApiKey}
+                      onClick={() => loadPrototype('warrior')}
+                    >
+                      <User size={14} />
+                      Carica esempio guerriero
+                    </button>
+                    <button
+                      type="button"
+                      className="prototype-pill"
                       disabled={busy}
-                      onChange={(e) => setUserApiKey(e.target.value)}
-                      className="key-input"
-                    />
+                      onClick={() => loadPrototype('mage')}
+                    >
+                      <Wand2 size={14} />
+                      Carica esempio maga
+                    </button>
                   </div>
-                )}
-              </div>
-
-              {/* Explicit Consent Checkbox */}
-              <label className="consent-box">
-                <input
-                  type="checkbox"
-                  checked={consent}
-                  disabled={busy}
-                  onChange={(e) => setConsent(e.target.checked)}
-                />
-                <span className="consent-text">
-                  <ShieldCheck size={16} />
-                  <span>
-                    <strong>Consenso Google AI Free Tier:</strong> accetto l'invio
-                    dell'immagine ai server Google per l'elaborazione multimodale
-                    secondo i termini del piano gratuito. Nessun billing o costo.
-                  </span>
-                </span>
-              </label>
-
-              <div className="note">
-                <strong>9 Livelli Adobe Fresco generati:</strong> 1. Tratto / Lineart · 2. Accessori (spada/gioielli) · 3. Occhi · 4. Bocca · 5. Capelli · 6. Pelle (viso, orecchie, collo) · 7. Vestiti · 8. Sfondo · 9. Originale nascosto per recupero non distruttivo. Potrai rifinire ogni maschera con Apple Pencil prima di applicarla!
-              </div>
+                </details>
+              )}
             </div>
           ) : (
             <>
@@ -477,7 +352,8 @@ export function ExtractModal({
                     onChange={(e) =>
                       setOptions((o) => ({
                         ...o,
-                        background: e.target.value as ExtractionOptions['background'],
+                        background: e.target
+                          .value as ExtractionOptions['background'],
                       }))
                     }
                   >
@@ -531,8 +407,8 @@ export function ExtractModal({
               )}
               <div className="note">
                 {selectedMode === 'objects'
-                  ? 'Funziona con elementi distanziati. Per personaggi illustrati, usa la modalità "Anatomica" in alto.'
-                  : 'Raggruppa i pixel per colore. Per distinguere invece parti corporee (pelle, capelli, abiti), usa "Anatomica".'}
+                  ? 'Funziona con elementi distanziati. Per personaggi illustrati, usa la modalità "Parti del soggetto" in alto.'
+                  : 'Raggruppa i pixel per colore. Per distinguere invece parti del soggetto, usa "Parti del soggetto".'}
               </div>
             </>
           )}
@@ -553,7 +429,7 @@ export function ExtractModal({
               </strong>
               <p>
                 {classicResult.layers.length === 1
-                  ? 'Il soggetto è connesso. Usa la modalità "Anatomica" per separare i vestiti, la pelle e i capelli.'
+                  ? 'Il soggetto è connesso. Usa la modalità "Parti del soggetto" per separare i vestiti, la pelle e i capelli.'
                   : 'Ogni elemento diventerà un livello indipendente.'}
               </p>
             </div>
@@ -605,41 +481,41 @@ export function ExtractModal({
           )}
         </button>
 
-        <button
-          type="button"
-          className="button primary"
-          disabled={busy || (selectedMode === 'semantic' && !consent && !useMockDemo)}
-          onClick={() => {
-            if (classicResult) {
-              onApply(classicResult.layers) && onClose();
-            } else if (selectedMode === 'semantic') {
-              void runSemanticSeparation();
-            } else {
-              runClassic();
-            }
-          }}
-        >
-          {busy ? (
-            <>
-              <LoaderCircle size={18} className="spin" />
-              {selectedMode === 'semantic'
-                ? 'Analisi anatomica in corso…'
-                : 'Analisi in corso…'}
-            </>
-          ) : classicResult ? (
-            <>
-              Usa questi livelli
-              <Check size={18} />
-            </>
-          ) : (
-            <>
-              {selectedMode === 'semantic'
-                ? 'Avvia Separazione Anatomica'
-                : 'Trova i livelli'}
-              <ArrowRight size={18} />
-            </>
-          )}
-        </button>
+        {(selectedMode !== 'semantic' || classicResult) && (
+          <button
+            type="button"
+            className="button primary"
+            disabled={busy}
+            onClick={() => {
+              if (classicResult) {
+                onApply(classicResult.layers) && onClose();
+              } else {
+                runClassic();
+              }
+            }}
+          >
+            {busy ? (
+              <>
+                <LoaderCircle size={18} className="spin" />
+                {selectedMode === 'semantic'
+                  ? 'Analisi anatomica in corso…'
+                  : 'Analisi in corso…'}
+              </>
+            ) : classicResult ? (
+              <>
+                Usa questi livelli
+                <Check size={18} />
+              </>
+            ) : (
+              <>
+                {selectedMode === 'semantic'
+                  ? 'Identifica le parti'
+                  : 'Trova i livelli'}
+                <ArrowRight size={18} />
+              </>
+            )}
+          </button>
+        )}
       </div>
     </Modal>
   );

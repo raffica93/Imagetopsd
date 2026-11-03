@@ -1,7 +1,15 @@
+import type { SemanticInventory } from '../utils/semanticProtocol';
 export type BlendMode = 'normal' | 'multiply' | 'screen';
 
 // The first item is the topmost layer. Canvas pixels are immutable after creation.
-export interface LayerItem {
+export interface SemanticMetadata {
+  semanticGroupId?: string;
+  semanticRole?: string;
+  semanticLeft?: number;
+  semanticTop?: number;
+  semanticInventory?: SemanticInventory;
+}
+export interface LayerItem extends SemanticMetadata {
   id: string;
   name: string;
   visible: boolean;

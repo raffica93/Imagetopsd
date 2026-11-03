@@ -1,5 +1,7 @@
 # Prompt per continuare FrescoLayers con Gemini
 
+> **Documento storico, precedente all’integrazione Gemini.** Per lo stato attuale leggi prima il README: esistono già endpoint Express, contorni AI sperimentali, tratto e correzioni manuali. Non usare gli esempi geometrici come ripiego per una foto. I test automatici verificano l’editor; la precisione dell’inferenza resta da valutare sulle immagini reali. Non copiare come attuali le dichiarazioni di stato nel blocco seguente.
+
 Importa il repository dal branch main in Gemini / Google AI Studio con un modello disponibile nel piano gratuito del tuo account. Se non può leggere GitHub, carica il progetto come ZIP. Allega a Gemini la foto originale e lo screenshot della separazione frammentata, che non sono nel repository.
 
 Il 3 novembre 2026 la documentazione ufficiale consultata elenca gemini-3.8-flash con input/output gratuiti nel Free Tier. Disponibilità nel singolo account, quote e qualità delle maschere vanno verificate. La generazione di immagini è distinta dalla segmentazione e può avere prezzi diversi.
