@@ -18,6 +18,7 @@ import {
   RotateCcw,
   X,
 } from 'lucide-react';
+import type { SemanticInventory } from '../utils/semanticProtocol';
 import type { LayerItem } from '../types';
 import type {
   SemanticLabel,
@@ -25,9 +26,9 @@ import type {
   SelectionPoint,
 } from '../utils/semanticSegmentation';
 import {
-  SEMANTIC_HIERARCHY,
+  definitionsFromMasks,
+  displayPartName,
   EMPTY_PIXEL,
-  UNASSIGNED,
   ownersFromMasks,
   masksFromOwners,
   paintOwners,
@@ -63,6 +64,7 @@ export function SemanticRefinementStudio({
   isMock,
   modelUsed,
   warning,
+  inventory,
   onApply,
   onBack,
 }: {
@@ -71,9 +73,17 @@ export function SemanticRefinementStudio({
   isMock: boolean;
   modelUsed: string;
   warning?: string;
+  inventory?: SemanticInventory;
   onApply: (layers: LayerItem[]) => void;
   onBack: () => void;
 }) {
+  const hierarchy = useMemo(
+    () => definitionsFromMasks(initialMasks),
+    [initialMasks],
+  );
+  const unassigned = hierarchy.findIndex((h) => h.label === 'Da assegnare');
+  const partName = (label: SemanticLabel) =>
+    displayPartName(hierarchy.find((h) => h.label === label)!);
   const width = sourceLayer.canvas.width,
     height = sourceLayer.canvas.height;
   const data = useMemo(
@@ -99,7 +109,7 @@ export function SemanticRefinementStudio({
     [diameter, setDiameter] = useState(24),
     [tolerance, setTolerance] = useState(30);
   const [visible, setVisible] = useState(
-    () => new Set(SEMANTIC_HIERARCHY.map((h) => h.label)),
+    () => new Set(hierarchy.map((h) => h.label)),
   );
   const [selection, setSelection] = useState<Uint8Array | null>(null),
     [path, setPath] = useState<Point[]>([]);
@@ -115,7 +125,7 @@ export function SemanticRefinementStudio({
     zoomRef = useRef(zoom);
   zoomRef.current = zoom;
   const counts = useMemo(() => {
-    const c = new Uint32Array(SEMANTIC_HIERARCHY.length);
+    const c = new Uint32Array(hierarchy.length);
     for (const o of history.present) if (o !== EMPTY_PIXEL) c[o]++;
     return c;
   }, [history.present]);
@@ -192,8 +202,8 @@ export function SemanticRefinementStudio({
     const ctx = context(c),
       image = ctx.createImageData(width, height),
       out = image.data;
-    const activeIndex = SEMANTIC_HIERARCHY.findIndex((h) => h.label === active),
-      hex = SEMANTIC_HIERARCHY[activeIndex].colorHex;
+    const activeIndex = hierarchy.findIndex((h) => h.label === active),
+      hex = hierarchy[activeIndex].colorHex;
     const tint = [
       parseInt(hex.slice(1, 3), 16),
       parseInt(hex.slice(3, 5), 16),
@@ -203,7 +213,7 @@ export function SemanticRefinementStudio({
       const owner = history.present[i],
         p = i * 4;
       if (owner === EMPTY_PIXEL) continue;
-      const enabled = visible.has(SEMANTIC_HIERARCHY[owner].label);
+      const enabled = visible.has(hierarchy[owner].label);
       if (
         !selection?.[i] &&
         ((view === 'solo' && (owner !== activeIndex || !enabled)) ||
@@ -299,6 +309,7 @@ export function SemanticRefinementStudio({
           p,
           diameter / 2 / zoomRef.current,
           target,
+          hierarchy,
         ),
       );
     }
@@ -357,6 +368,7 @@ export function SemanticRefinementStudio({
           p,
           diameter / 2 / zoomRef.current,
           target,
+          hierarchy,
         ),
       );
     g.last = p;
@@ -390,7 +402,7 @@ export function SemanticRefinementStudio({
       ) {
         const index =
           state.current.present[Math.floor(p.y) * width + Math.floor(p.x)];
-        if (index !== EMPTY_PIXEL) selectLabel(SEMANTIC_HIERARCHY[index].label);
+        if (index !== EMPTY_PIXEL) selectLabel(hierarchy[index].label);
       }
     }
     setPath([]);
@@ -399,10 +411,18 @@ export function SemanticRefinementStudio({
   }
   function assign() {
     if (!selection) return;
-    commit(assignSelection(state.current.present, selection, data, target));
+    commit(
+      assignSelection(
+        state.current.present,
+        selection,
+        data,
+        target,
+        hierarchy,
+      ),
+    );
     setSelection(null);
     regionSeed.current = null;
-    setNotice(`Zona assegnata a ${target}.`);
+    setNotice(`Zona assegnata a ${partName(target)}.`);
   }
   const tools: { id: Tool; label: string; icon: typeof Hand }[] = [
     { id: 'pick', label: 'Seleziona parte', icon: MousePointer2 },
@@ -433,7 +453,7 @@ export function SemanticRefinementStudio({
                 : `Contorni da verificare · ${modelUsed}`}
           </strong>
           <p>
-            {counts[UNASSIGNED].toLocaleString('it-IT')} pixel da assegnare.
+            {counts[unassigned].toLocaleString('it-IT')} pixel da assegnare.
             Controlla anche le parti già riconosciute.
             {warning && <span role="status"> {warning}</span>}
           </p>
@@ -463,7 +483,7 @@ export function SemanticRefinementStudio({
         <aside className="precision-parts" aria-label="Parti del personaggio">
           <p>Scegli la parte a cui assegnare i pixel</p>
           <div className="precision-part-list">
-            {SEMANTIC_HIERARCHY.map((h, i) => (
+            {hierarchy.map((h, i) => (
               <div
                 key={h.label}
                 className={`precision-part ${active === h.label ? 'selected' : ''}`}
@@ -471,13 +491,13 @@ export function SemanticRefinementStudio({
                 <button
                   className="precision-part-pick"
                   type="button"
-                  aria-label={`Seleziona parte ${h.label}`}
+                  aria-label={`Seleziona parte ${displayPartName(h)}`}
                   aria-pressed={active === h.label}
                   onClick={() => selectLabel(h.label)}
                 >
                   <i style={{ background: h.colorHex }} />
                   <span>
-                    <strong>{h.label}</strong>
+                    <strong>{displayPartName(h)}</strong>
                     <small>
                       {counts[i].toLocaleString('it-IT')} px
                       {!counts[i] ? ' · vuoto' : ''}
@@ -487,7 +507,7 @@ export function SemanticRefinementStudio({
                 <button
                   className="icon-button"
                   type="button"
-                  aria-label={`${visible.has(h.label) ? 'Nascondi' : 'Mostra'} parte ${h.label}`}
+                  aria-label={`${visible.has(h.label) ? 'Nascondi' : 'Mostra'} parte ${displayPartName(h)}`}
                   onClick={() =>
                     setVisible((v) => {
                       const n = new Set(v);
@@ -649,7 +669,7 @@ export function SemanticRefinementStudio({
           </div>
           <div className="precision-bottom">
             <span>
-              Parte attiva: <strong>{active}</strong>
+              Parte attiva: <strong>{partName(active)}</strong>
             </span>
             <div className="zoom-controls">
               <button
@@ -690,7 +710,7 @@ export function SemanticRefinementStudio({
                 disabled={!selectionCount}
                 onClick={assign}
               >
-                Assegna a {target}
+                Assegna a {partName(target)}
                 <Check size={16} />
               </button>
               <button
@@ -726,7 +746,8 @@ export function SemanticRefinementStudio({
             onApply(
               buildProjectLayersFromMasks(
                 sourceLayer,
-                masksFromOwners(state.current.present),
+                masksFromOwners(state.current.present, hierarchy),
+                inventory,
               ),
             )
           }

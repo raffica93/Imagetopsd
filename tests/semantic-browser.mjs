@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { readPsd, initializeCanvas } from 'ag-psd';
+import { checkDynamicParts } from './dynamic-parts.mjs';
 const url = process.env.TEST_BASE_URL || 'http://127.0.0.1:4175',
   artifacts = process.env.TEST_ARTIFACTS || '/tmp/fresco-semantic-test';
 await mkdir(artifacts, { recursive: true });
@@ -106,6 +107,8 @@ try {
       return m.toDataURL('image/png').split(',')[1];
     };
     const parts = [
+      { label: 'Accessori', mask: mask(() => {}) },
+      { label: 'Bocca', mask: mask(() => {}) },
       { label: 'Pelle', mask: mask((ctx) => ctx.fillRect(22, 20, 76, 68)) },
       { label: 'Capelli', mask: mask((ctx) => ctx.fillRect(20, 6, 80, 23)) },
       {
@@ -127,41 +130,76 @@ try {
     mimeType: 'image/png',
     buffer: Buffer.from(fixture.image, 'base64'),
   });
+  const names = ['Accessori', 'Occhi', 'Bocca', 'Capelli', 'Pelle'];
+  const inventory = {
+    id: 'portrait-fixture',
+    subject: 'Personaggio sintetico, senza AI',
+    parts: names.map((name, index) => ({
+      id: `part:${index + 1}`,
+      name,
+      description: `Regione di prova ${name}`,
+      box_2d: [0, 0, 1000, 1000],
+    })),
+  };
   let calls = 0,
     fail = true;
   await page.route('**/api/segment-semantic', async (route) => {
     calls++;
+    const body = route.request().postDataJSON();
+    let response;
+    if (body.stage === 'identify')
+      response = {
+        isMock: false,
+        modelUsed: 'Fixture di test, senza AI',
+        inventory,
+      };
+    else {
+      const part = inventory.parts.find((p) => p.id === body.partId),
+        mask = fixture.parts.find((p) => p.label === part.name);
+      response = {
+        isMock: false,
+        modelUsed: 'Fixture di test, senza AI',
+        maskFormat: 'png',
+        discardedParts: part.id === 'part:1' ? 1 : 0,
+        parts: [{ ...mask, label: part.id }],
+      };
+    }
     await route.fulfill({
       status: fail ? 503 : 200,
       contentType: 'application/json',
       body: JSON.stringify(
         fail
           ? { error: 'Google occupato: nessuna sagoma applicata.' }
-          : {
-              isMock: false,
-              modelUsed: 'Fixture di test, senza AI',
-              maskFormat: 'png',
-              discardedParts: 1,
-              parts: fixture.parts,
-            },
+          : response,
       ),
     });
   });
   await choose('Separa in livelli');
   assert.equal(
     await page
-      .getByRole('button', { name: 'Avvia Separazione Anatomica', exact: true })
+      .getByRole('button', { name: 'Identifica le parti', exact: true })
       .isDisabled(),
     true,
     'consent must be explicit',
   );
   await page.locator('.consent-box input').check();
-  await choose('Avvia Separazione Anatomica');
+  await choose('Identifica le parti');
   await expect(page.getByRole('alert')).toContainText('nessuna sagoma');
   assert.equal(await page.locator('.precision-studio').count(), 0);
   assert.equal(await page.locator('.layer-row').count(), 1);
   fail = false;
-  await choose('Avvia Separazione Anatomica');
+  await choose('Identifica le parti');
+  await expect(
+    page.getByRole('list', {
+      name: 'Parti riconosciute, dalla prima all’ultima',
+    }),
+  ).toBeVisible();
+  assert.equal(
+    await page.locator('.precision-studio').count(),
+    0,
+    'discovery must not apply boxes as selections',
+  );
+  await choose('Seleziona 5 parti');
   await expect(
     page.getByRole('heading', { name: 'Rifinisci le selezioni', exact: true }),
   ).toBeVisible();
@@ -182,6 +220,7 @@ try {
   console.log(
     'PASS failed API is visible; real PNG-mask protocol and explicit consent',
   );
+  const callsAfterSegmentation = calls;
   async function at(x, y) {
     const b = await page.locator('.precision-paper').boundingBox();
     return { x: b.x + (x * b.width) / 120, y: b.y + (y * b.height) / 100 };
@@ -333,7 +372,11 @@ try {
     1,
     'reopening must directly restore masks',
   );
-  assert.equal(calls, 2, 'reopening must not resend image');
+  assert.equal(
+    calls,
+    callsAfterSegmentation,
+    'reopening must not resend image',
+  );
   await choose('Applica selezioni');
   assert.equal(
     await page.getByLabel('Nome', { exact: true }).inputValue(),
@@ -351,7 +394,7 @@ try {
   await page.locator('.layer-row').first().waitFor();
   await choose('Separa in livelli');
   await expect(page.locator('.precision-studio')).toBeVisible();
-  assert.equal(calls, 2);
+  assert.equal(calls, callsAfterSegmentation);
   await choose('Applica selezioni');
   assert.equal(await page.locator('.layer-row').count(), layerCount);
   console.log(
@@ -409,6 +452,7 @@ try {
     'manual correction requires neither an API call nor a key',
   );
   await manual.close();
+  await checkDynamicParts({ browser, url, artifacts });
   console.log(
     `ALL SEMANTIC EDITOR CHECKS PASSED (${process.env.TEST_BROWSER || 'chromium'}). Fixtures are synthetic, not an AI quality benchmark.`,
   );

@@ -4,7 +4,7 @@ import type {
   BlendMode,
   SemanticMetadata,
 } from '../types';
-import { SEMANTIC_LABELS } from './semanticProtocol';
+import { isSemanticLabel, validateSemanticInventory } from './semanticProtocol';
 import {
   MAX_EDGE,
   MAX_IMAGE_PIXELS,
@@ -62,6 +62,7 @@ export async function serializeProject(
       semanticRole: l.semanticRole,
       semanticLeft: l.semanticLeft,
       semanticTop: l.semanticTop,
+      semanticInventory: l.semanticInventory,
     });
   return { version: 1, settings: project.settings, layers };
 }
@@ -103,11 +104,13 @@ export function validateStoredProject(
         !l.semanticGroupId ||
         l.semanticGroupId.length > 100 ||
         typeof l.semanticRole !== 'string' ||
-        ![...SEMANTIC_LABELS, 'Originale'].includes(l.semanticRole) ||
+        !(l.semanticRole === 'Originale' || isSemanticLabel(l.semanticRole)) ||
         !finite(l.semanticLeft, 0, MAX_EDGE) ||
         !finite(l.semanticTop, 0, MAX_EDGE))
     )
       throw new Error('Metadati dei livelli semantici non validi.');
+    if (l.semanticInventory !== undefined)
+      validateSemanticInventory(l.semanticInventory);
     if (
       !l ||
       typeof l.name !== 'string' ||
@@ -156,6 +159,7 @@ export async function deserializeProject(
       semanticRole: l.semanticRole,
       semanticLeft: l.semanticLeft,
       semanticTop: l.semanticTop,
+      semanticInventory: l.semanticInventory,
     });
   }
   validateBudget(layers);

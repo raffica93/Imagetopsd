@@ -175,3 +175,129 @@ test('quota errors remain quota errors without fallback or disclosure', async ()
     },
   );
 });
+
+const inventory = {
+  id: 'soldier-test',
+  subject: 'Soldato',
+  parts: [
+    {
+      id: 'part:1' as const,
+      name: 'Elmo',
+      description: 'Copricapo di metallo',
+      box_2d: [0, 200, 300, 800],
+    },
+  ],
+};
+test('first pass discovers custom parts and order without producing pixel masks', async () => {
+  await serve(
+    async (_key, _model, _image, _signal, task) => {
+      assert.equal(task.stage, 'identify');
+      return JSON.stringify({
+        subject: 'Soldato',
+        parts: [
+          {
+            name: 'Elmo',
+            description: 'Copricapo di metallo',
+            box_2d: [0, 200, 300, 800],
+          },
+          {
+            name: 'Armatura superiore',
+            description: 'Corazza del busto',
+            box_2d: [300, 200, 600, 800],
+          },
+          {
+            name: 'Armatura inferiore',
+            description: 'Protezioni delle gambe',
+            box_2d: [600, 200, 1000, 800],
+          },
+        ],
+      });
+    },
+    async (url) => {
+      const response = await post(url, { ...body, stage: 'identify' }),
+        data = await response.json();
+      assert.equal(response.status, 200);
+      assert.equal(data.isMock, false);
+      assert.deepEqual(
+        data.inventory.parts.map((p: any) => p.name),
+        ['Elmo', 'Armatura superiore', 'Armatura inferiore'],
+      );
+      assert.deepEqual(
+        data.inventory.parts.map((p: any) => p.id),
+        ['part:1', 'part:2', 'part:3'],
+      );
+      assert.ok(data.inventory.id);
+      assert.equal(data.parts, undefined);
+      assert.equal(data.inventory.parts[0].polygon, undefined);
+    },
+  );
+});
+test('second pass targets only an identified part and accepts its crop-local contours', async () => {
+  await serve(
+    async (_key, _model, _image, _signal, task) => {
+      assert.equal(task.stage, 'segment-part');
+      if (task.stage !== 'segment-part') throw Error('Wrong stage');
+      assert.equal(task.part.name, 'Elmo');
+      return JSON.stringify({
+        parts: [
+          {
+            label: 'part:1',
+            box_2d: [0, 0, 1000, 1000],
+            polygon: [
+              [0, 0],
+              [0, 1000],
+              [1000, 0],
+            ],
+          },
+          {
+            label: 'Pelle',
+            box_2d: [0, 0, 1000, 1000],
+            polygon: [
+              [0, 0],
+              [0, 1000],
+              [1000, 0],
+            ],
+          },
+        ],
+      });
+    },
+    async (url) => {
+      const response = await post(url, {
+          ...body,
+          stage: 'segment-part',
+          inventory,
+          partId: 'part:1',
+        }),
+        data = await response.json();
+      assert.equal(response.status, 200);
+      assert.equal(data.parts.length, 1);
+      assert.equal(data.parts[0].label, 'part:1');
+      assert.equal(data.discardedParts, 1);
+    },
+  );
+});
+test('unknown part IDs and invalid discovery lists are rejected before any Google call', async () => {
+  let calls = 0;
+  await serve(
+    async () => {
+      calls++;
+      return '{}';
+    },
+    async (url) => {
+      for (const request of [
+        { stage: 'unknown' },
+        { stage: 'segment-part', inventory, partId: 'part:2' },
+        {
+          stage: 'segment-part',
+          inventory: {
+            ...inventory,
+            parts: [...inventory.parts, ...inventory.parts],
+          },
+          partId: 'part:1',
+        },
+      ])
+        assert.equal((await post(url, { ...body, ...request })).status, 400);
+      assert.equal(calls, 0);
+    },
+  );
+});

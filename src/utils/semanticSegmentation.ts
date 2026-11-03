@@ -2,8 +2,13 @@
 import type { LayerItem } from '../types';
 import { MAX_IMAGE_PIXELS } from '../types';
 import { createCanvas, context, makeLayer, loadImage } from './canvasHelpers';
-import { SEMANTIC_LABELS } from './semanticProtocol';
-import type { SemanticLabel, SemanticPart } from './semanticProtocol';
+import { SEMANTIC_LABELS, isSemanticLabel } from './semanticProtocol';
+import type {
+  SemanticLabel,
+  SemanticPart,
+  SemanticInventory,
+  DetectedPart,
+} from './semanticProtocol';
 export type { SemanticLabel, SemanticPart } from './semanticProtocol';
 export { validateSemanticParts } from './semanticProtocol';
 
@@ -15,12 +20,13 @@ export interface SemanticRefinementMask {
   mask: Uint8Array;
   pixelCount: number;
 }
-export const SEMANTIC_HIERARCHY: {
+export interface MaskDefinition {
   label: SemanticLabel;
   defaultName: string;
   colorHex: string;
   description: string;
-}[] = [
+}
+export const SEMANTIC_HIERARCHY: MaskDefinition[] = [
   {
     label: 'Tratto',
     defaultName: 'Tratto / Contorni (Lineart)',
@@ -78,7 +84,99 @@ export const SEMANTIC_HIERARCHY: {
 ];
 export const UNASSIGNED = SEMANTIC_LABELS.indexOf('Da assegnare');
 export const EMPTY_PIXEL = 255;
-const indexOf = (label: SemanticLabel) => SEMANTIC_LABELS.indexOf(label);
+const indexOf = (label: SemanticLabel, definitions = SEMANTIC_HIERARCHY) =>
+  definitions.findIndex((d) => d.label === label);
+export function definitionsFromInventory(
+  inventory: SemanticInventory,
+): MaskDefinition[] {
+  const colors = [
+    '#a855f7',
+    '#06b6d4',
+    '#f43f5e',
+    '#f97316',
+    '#eab308',
+    '#10b981',
+    '#6366f1',
+    '#d946ef',
+  ];
+  return [
+    SEMANTIC_HIERARCHY[0],
+    ...inventory.parts.map((part, i) => ({
+      label: part.id,
+      defaultName: part.name,
+      colorHex: colors[i % colors.length],
+      description: part.description,
+    })),
+    ...SEMANTIC_HIERARCHY.slice(-2),
+  ];
+}
+export function definitionsFromMasks(
+  masks: SemanticRefinementMask[],
+): MaskDefinition[] {
+  return masks.map((m) => ({
+    label: m.label,
+    defaultName: m.name,
+    colorHex: m.colorHex,
+    description: '',
+  }));
+}
+export const displayPartName = (definition: MaskDefinition) =>
+  definition.label.startsWith('part:')
+    ? definition.defaultName
+    : definition.label;
+
+export interface CropBounds {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+export function partCropBounds(
+  part: DetectedPart,
+  width: number,
+  height: number,
+): CropBounds {
+  const [y0, x0, y1, x1] = part.box_2d;
+  const padX = Math.max(8, (((x1 - x0) * width) / 1000) * 0.08),
+    padY = Math.max(8, (((y1 - y0) * height) / 1000) * 0.08);
+  const left = Math.max(0, Math.floor((x0 * width) / 1000 - padX)),
+    top = Math.max(0, Math.floor((y0 * height) / 1000 - padY));
+  return {
+    left,
+    top,
+    width: Math.min(width, Math.ceil((x1 * width) / 1000 + padX)) - left,
+    height: Math.min(height, Math.ceil((y1 * height) / 1000 + padY)) - top,
+  };
+}
+export function mapPartsFromCrop(
+  parts: SemanticPart[],
+  crop: CropBounds,
+  width: number,
+  height: number,
+): SemanticPart[] {
+  const x = (v: number) =>
+      ((crop.left + (v * crop.width) / 1000) * 1000) / width,
+    y = (v: number) => ((crop.top + (v * crop.height) / 1000) * 1000) / height;
+  return parts.map((p) => {
+    let pixels: Uint8Array | undefined;
+    if (p.maskPixels) {
+      if (p.maskPixels.length !== crop.width * crop.height)
+        throw new Error('Maschera del ritaglio non valida.');
+      pixels = new Uint8Array(width * height);
+      for (let row = 0; row < crop.height; row++)
+        pixels.set(
+          p.maskPixels.subarray(row * crop.width, (row + 1) * crop.width),
+          (row + crop.top) * width + crop.left,
+        );
+    }
+    return {
+      ...p,
+      maskPixels: pixels,
+      box_2d: [y(p.box_2d[0]), x(p.box_2d[1]), y(p.box_2d[2]), x(p.box_2d[3])],
+      polygon: p.polygon?.map(([py, px]) => [y(py), x(px)]),
+    };
+  });
+}
 function assertImage(data: Uint8ClampedArray, width: number, height: number) {
   if (
     !Number.isInteger(width) ||
@@ -114,19 +212,26 @@ export function rasterizeNormalizedPolygon(
   const scaled = polygon.map(
     ([y, x]) => [(y * height) / 1000, (x * width) / 1000] as [number, number],
   );
-  const xs = scaled.map((p) => p[1]),
-    ys = scaled.map((p) => p[0]);
-  for (
-    let y = Math.max(0, Math.floor(Math.min(...ys)));
-    y < Math.min(height, Math.ceil(Math.max(...ys)));
-    y++
-  )
-    for (
-      let x = Math.max(0, Math.floor(Math.min(...xs)));
-      x < Math.min(width, Math.ceil(Math.max(...xs)));
-      x++
-    )
-      if (isPointInPolygon(x + 0.5, y + 0.5, scaled)) mask[y * width + x] = 1;
+  const ys = scaled.map((p) => p[0]);
+  const top = Math.max(0, Math.floor(Math.min(...ys))),
+    bottom = Math.min(height, Math.ceil(Math.max(...ys)));
+  // Scanlines avoid testing every vertex for every pixel on larger iPad images.
+  for (let y = top; y < bottom; y++) {
+    const scan = y + 0.5,
+      crossings: number[] = [];
+    for (let i = 0, j = scaled.length - 1; i < scaled.length; j = i++) {
+      const [yi, xi] = scaled[i],
+        [yj, xj] = scaled[j];
+      if (yi > scan !== yj > scan)
+        crossings.push(xi + ((scan - yi) * (xj - xi)) / (yj - yi));
+    }
+    crossings.sort((a, b) => a - b);
+    for (let k = 0; k + 1 < crossings.length; k += 2) {
+      const left = Math.max(0, Math.ceil(crossings[k] - 0.5)),
+        right = Math.min(width, Math.ceil(crossings[k + 1] - 0.5));
+      if (right > left) mask.fill(1, y * width + left, y * width + right);
+    }
+  }
   return mask;
 }
 
@@ -298,8 +403,11 @@ export function extractLineartMask(
   return out;
 }
 
-export function masksFromOwners(owners: Uint8Array): SemanticRefinementMask[] {
-  return SEMANTIC_HIERARCHY.map((h, index) => {
+export function masksFromOwners(
+  owners: Uint8Array,
+  definitions = SEMANTIC_HIERARCHY,
+): SemanticRefinementMask[] {
+  return definitions.map((h, index) => {
     const mask = new Uint8Array(owners.length);
     let pixelCount = 0;
     for (let i = 0; i < owners.length; i++)
@@ -320,15 +428,18 @@ export function ownersFromMasks(
   masks: SemanticRefinementMask[],
   data: Uint8ClampedArray,
 ) {
+  const definitions = definitionsFromMasks(masks);
+  const unassigned = indexOf('Da assegnare', definitions);
+  if (unassigned < 0) throw new Error('Manca il livello Da assegnare.');
   const owners = new Uint8Array(data.length / 4).fill(EMPTY_PIXEL);
   for (let i = 0; i < owners.length; i++)
-    if (data[i * 4 + 3]) owners[i] = UNASSIGNED;
+    if (data[i * 4 + 3]) owners[i] = unassigned;
   // Highest-priority layer wins any legacy overlap. No source pixels are dropped.
-  for (const h of [...SEMANTIC_HIERARCHY].reverse()) {
+  for (const h of [...definitions].reverse()) {
     const mask = masks.find((m) => m.label === h.label)?.mask;
     if (!mask) continue;
     for (let i = 0; i < owners.length; i++)
-      if (data[i * 4 + 3] && mask[i]) owners[i] = indexOf(h.label);
+      if (data[i * 4 + 3] && mask[i]) owners[i] = indexOf(h.label, definitions);
   }
   return owners;
 }
@@ -337,8 +448,10 @@ export function initializeSemanticRefinementMasks(
   width: number,
   height: number,
   parts: SemanticPart[],
+  definitions = SEMANTIC_HIERARCHY,
 ): SemanticRefinementMask[] {
   assertImage(data, width, height);
+  const unassigned = indexOf('Da assegnare', definitions);
   const owners = new Uint8Array(width * height).fill(EMPTY_PIXEL);
   const candidates = parts
     .filter((p) => p.label !== 'Tratto')
@@ -350,34 +463,36 @@ export function initializeSemanticRefinementMasks(
       binary: !p.maskPixels,
     }));
   for (let i = 0; i < owners.length; i++)
-    if (data[i * 4 + 3]) {
-      owners[i] = UNASSIGNED;
-      for (const h of SEMANTIC_HIERARCHY) {
-        if (h.label === 'Tratto' || h.label === 'Da assegnare') continue;
+    if (data[i * 4 + 3]) owners[i] = unassigned;
+  // Paint back to front once per region; foreground parts win overlaps.
+  for (const definition of [...definitions].reverse()) {
+    for (const candidate of candidates.filter(
+      (c) => c.label === definition.label,
+    )) {
+      const owner = indexOf(definition.label, definitions);
+      for (let i = 0; i < owners.length; i++)
         if (
-          candidates.some(
-            (c) =>
-              c.label === h.label &&
-              (c.binary ? c.pixels[i] > 0 : c.pixels[i] >= 128),
-          )
-        ) {
-          owners[i] = indexOf(h.label);
-          break;
-        }
-      }
+          data[i * 4 + 3] &&
+          (candidate.binary
+            ? candidate.pixels[i] > 0
+            : candidate.pixels[i] >= 128)
+        )
+          owners[i] = owner;
     }
+  }
   const inferred = borderBackground(data, width, height),
     fg = new Uint8Array(owners.length);
   for (let i = 0; i < owners.length; i++) {
-    if (owners[i] === UNASSIGNED && inferred[i]) owners[i] = indexOf('Sfondo');
+    if (owners[i] === unassigned && inferred[i])
+      owners[i] = indexOf('Sfondo', definitions);
     fg[i] = Number(
-      owners[i] !== EMPTY_PIXEL && owners[i] !== indexOf('Sfondo'),
+      owners[i] !== EMPTY_PIXEL && owners[i] !== indexOf('Sfondo', definitions),
     );
   }
   const ink = extractLineartMask(data, width, height, 90, fg);
   for (let i = 0; i < ink.length; i++)
-    if (ink[i]) owners[i] = indexOf('Tratto');
-  return masksFromOwners(owners);
+    if (ink[i]) owners[i] = indexOf('Tratto', definitions);
+  return masksFromOwners(owners, definitions);
 }
 
 export type SelectionPoint = { x: number; y: number };
@@ -450,6 +565,7 @@ export function paintOwners(
   to: SelectionPoint,
   radius: number,
   target: SemanticLabel,
+  definitions = SEMANTIC_HIERARCHY,
 ) {
   const next = new Uint8Array(owners),
     r = Math.max(0.5, Math.min(1000, radius)),
@@ -476,7 +592,7 @@ export function paintOwners(
           (x - cx) ** 2 + (y - cy) ** 2 <= r * r &&
           data[(y * width + x) * 4 + 3]
         )
-          next[y * width + x] = indexOf(target);
+          next[y * width + x] = indexOf(target, definitions);
   }
   return next;
 }
@@ -485,26 +601,29 @@ export function assignSelection(
   selection: Uint8Array,
   data: Uint8ClampedArray,
   target: SemanticLabel,
+  definitions = SEMANTIC_HIERARCHY,
 ) {
   if (selection.length !== owners.length)
     throw new Error('Selezione non valida.');
   const next = new Uint8Array(owners);
   for (let i = 0; i < next.length; i++)
-    if (selection[i] && data[i * 4 + 3]) next[i] = indexOf(target);
+    if (selection[i] && data[i * 4 + 3]) next[i] = indexOf(target, definitions);
   return next;
 }
 
 export function buildProjectLayersFromMasks(
   source: LayerItem,
   masks: SemanticRefinementMask[],
+  inventory?: SemanticInventory,
 ): LayerItem[] {
   const width = source.canvas.width,
     height = source.canvas.height,
     data = context(source.canvas).getImageData(0, 0, width, height).data;
+  const definitions = definitionsFromMasks(masks);
   const owners = ownersFromMasks(masks, data),
-    group = source.semanticGroupId ?? crypto.randomUUID(),
+    group = inventory?.id ?? source.semanticGroupId ?? crypto.randomUUID(),
     layers: LayerItem[] = [];
-  for (let index = 0; index < SEMANTIC_HIERARCHY.length; index++) {
+  for (let index = 0; index < definitions.length; index++) {
     let left = width,
       top = height,
       right = -1,
@@ -533,7 +652,7 @@ export function buildProjectLayersFromMasks(
       sy = source.height / height,
       item = makeLayer(
         canvas,
-        SEMANTIC_HIERARCHY[index].defaultName,
+        definitions[index].defaultName,
         source.x + left * sx,
         source.y + top * sy,
       );
@@ -543,7 +662,7 @@ export function buildProjectLayersFromMasks(
       opacity: source.opacity,
       blendMode: source.blendMode,
       semanticGroupId: group,
-      semanticRole: SEMANTIC_HIERARCHY[index].label,
+      semanticRole: definitions[index].label,
       semanticLeft: left,
       semanticTop: top,
     });
@@ -564,6 +683,9 @@ export function buildProjectLayersFromMasks(
     locked: true,
     semanticGroupId: group,
     semanticRole: 'Originale',
+    semanticInventory: masks.some((m) => m.label.startsWith('part:'))
+      ? (inventory ?? source.semanticInventory)
+      : undefined,
     semanticLeft: 0,
     semanticTop: 0,
   });
@@ -578,7 +700,9 @@ export function preserveSemanticLayerEdits(
 ) {
   return generated.map((layer) => {
     const before = existing.find(
-      (item) => item.semanticRole === layer.semanticRole,
+      (item) =>
+        item.semanticRole === layer.semanticRole &&
+        item.semanticGroupId === layer.semanticGroupId,
     );
     if (!before) return layer;
     const sx = before.width / before.canvas.width,
@@ -606,12 +730,21 @@ export function restoreGroupMasks(source: LayerItem, layers: LayerItem[]) {
   const w = source.canvas.width,
     h = source.canvas.height,
     raw = context(source.canvas).getImageData(0, 0, w, h).data;
+  const definitions = source.semanticInventory
+    ? definitionsFromInventory(source.semanticInventory)
+    : SEMANTIC_HIERARCHY;
+  const named = definitions.map((d) => ({
+    ...d,
+    defaultName:
+      layers.find((l) => l.semanticRole === d.label)?.name ?? d.defaultName,
+  }));
+  const unassigned = indexOf('Da assegnare', named);
   const owners = new Uint8Array(w * h).fill(EMPTY_PIXEL);
   for (let i = 0; i < owners.length; i++)
-    if (raw[i * 4 + 3]) owners[i] = UNASSIGNED;
+    if (raw[i * 4 + 3]) owners[i] = unassigned;
   for (const l of [...layers].reverse()) {
     const label = l.semanticRole as SemanticLabel;
-    if (!SEMANTIC_LABELS.includes(label)) continue;
+    if (!isSemanticLabel(label) || indexOf(label, named) < 0) continue;
     const pixels = context(l.canvas).getImageData(
       0,
       0,
@@ -632,8 +765,8 @@ export function restoreGroupMasks(source: LayerItem, layers: LayerItem[]) {
           pixels[(y * l.canvas.width + x) * 4 + 3] &&
           raw[(ty * w + tx) * 4 + 3]
         )
-          owners[ty * w + tx] = indexOf(label);
+          owners[ty * w + tx] = indexOf(label, named);
       }
   }
-  return masksFromOwners(owners);
+  return masksFromOwners(owners, named);
 }

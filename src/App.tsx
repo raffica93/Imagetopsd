@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react';
 import {
   Layers,
   ArrowUpRight,
@@ -357,7 +363,7 @@ export default function App() {
     };
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!ready) return;
     let obsolete = false;
     setSaveState('saving');
@@ -551,7 +557,7 @@ export default function App() {
       setTool('move');
       notify(
         isCharacter
-          ? 'Personaggio caricato. Tocca “Separa in livelli” per isolare Tratto, Accessori, Occhi, Capelli, Pelle e Vestiti!'
+          ? 'Personaggio caricato. Tocca “Separa in livelli” per riconoscere e selezionare le sue parti.'
           : 'Esempio pronto. Tocca “Separa in livelli” per isolare i quattro sticker.',
       );
     });
@@ -570,6 +576,7 @@ export default function App() {
         semanticRole: undefined,
         semanticLeft: undefined,
         semanticTop: undefined,
+        semanticInventory: undefined,
       };
       const idx = p.layers.indexOf(l),
         layers = [...p.layers];
