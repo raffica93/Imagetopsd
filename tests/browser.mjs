@@ -11,8 +11,8 @@ await mkdir(artifacts, { recursive: true });
 let server;
 if (!process.env.TEST_BASE_URL) {
   server = spawn(
-    'npm',
-    ['run', 'dev', '--', '--port', '4173', '--strictPort'],
+    process.execPath,
+    ['--import', 'tsx', 'server.ts', '--port', '4173'],
     { stdio: 'pipe' },
   );
   let logs = '';

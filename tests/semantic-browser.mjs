@@ -9,9 +9,13 @@ const url = process.env.TEST_BASE_URL || 'http://127.0.0.1:4175',
 await mkdir(artifacts, { recursive: true });
 let server;
 if (!process.env.TEST_BASE_URL) {
-  server = spawn('npm', ['run', 'dev', '--', '--port', '4175'], {
-    stdio: 'pipe',
-  });
+  server = spawn(
+    process.execPath,
+    ['--import', 'tsx', 'server.ts', '--port', '4175'],
+    {
+      stdio: 'pipe',
+    },
+  );
   for (let i = 0; i < 100; i++) {
     try {
       if ((await fetch(url)).ok) break;
