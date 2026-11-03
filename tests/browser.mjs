@@ -13,7 +13,7 @@ if (!process.env.TEST_BASE_URL) {
   server = spawn(
     process.execPath,
     ['--import', 'tsx', 'server.ts', '--port', '4173'],
-    { stdio: 'pipe' },
+    { stdio: 'pipe', env: { ...process.env, NODE_ENV: 'production' } },
   );
   let logs = '';
   server.stdout.on('data', (s) => (logs += s));

@@ -7,8 +7,8 @@ Un editor di immagini per iPad che esporta **PSD con livelli pixel**. Il flusso 
 1. Apri l’app in Safari e carica PNG, JPG o WebP da Foto o File. Più immagini diventano livelli distinti.
 2. Seleziona un livello e tocca **Separa in livelli**. Scegli **Anatomica** per personaggi, **Oggetti separati** per sticker distanziati oppure **Per colore** per illustrazioni a tinte distinte.
 3. In Anatomica puoi richiedere contorni a Gemini dopo aver confermato l’invio della foto, oppure scegliere **Seleziona le parti a mano** senza chiave e senza inviare immagini.
-4. Nella rifinitura scegli una parte: Tratto, Accessori, Occhi, Bocca, Capelli, Pelle, Vestiti, Sfondo o Da assegnare. **Tocca** identifica la parte sotto il dito. **Zona** seleziona una regione contigua di colore simile; regola la tolleranza e conferma con **Assegna a…**. **Lazo** delimita una zona prima di assegnarla. **Pennello** trasferisce direttamente i pixel alla parte scelta.
-5. **Togli** sposta i pixel in **Da assegnare**. Annulla/ripristina recupera le correzioni. Due dita ingrandiscono e spostano la vista; sono disponibili anche Naviga, zoom e Adatta. Le viste Parte sola, Sovrapposizione e Composita aiutano a controllare la selezione.
+4. Nella rifinitura scegli una parte: Tratto, Accessori, Occhi, Bocca, Capelli, Pelle, Vestiti, Sfondo o Da assegnare. **Seleziona parte** identifica la parte sotto il dito. **Zona** seleziona una regione contigua di colore simile; regola la tolleranza e conferma con **Assegna a…**. **Lazo** delimita una zona prima di assegnarla. **Pennello** trasferisce direttamente i pixel alla parte scelta.
+5. **Togli** sposta i pixel in **Da assegnare**. Annulla/ripristina recupera le correzioni. Due dita ingrandiscono e spostano la vista; sono disponibili anche Naviga, zoom e Adatta. Le viste Isola parte, Selezione e Risultato aiutano a controllare la selezione.
 6. Applica i livelli. Per correggerli di nuovo, seleziona una parte e riapri **Separa in livelli**: il gruppo viene aggiornato senza una seconda chiamata AI e senza aggiungere altri originali.
 7. Tocca **Esporta → PSD a livelli → Prepara PSD**, poi **Condividi / Salva** o **Scarica file**. In Adobe Fresco usa **Importa e apri** dall’app File.
 
@@ -69,7 +69,7 @@ TEST_BROWSER=webkit npm run test:e2e
 TEST_BROWSER=webkit npm run test:semantic
 ```
 
-Gli script browser avviano e chiudono un server locale (porte 4173 e 4175). `TEST_BASE_URL` usa un server già avviato, `CHROMIUM_PATH` sceglie l’eseguibile e `TEST_ARTIFACTS` la cartella dei risultati.
+Gli script browser compilano la build e avviano e chiudono un server di produzione locale (porte 4173 e 4175), senza il client di sviluppo Vite. `TEST_BASE_URL` usa un server già avviato, `CHROMIUM_PATH` sceglie l’eseguibile e `TEST_ARTIFACTS` la cartella dei risultati.
 
 I test unitari verificano contorni concavi, regioni disconnesse, assegnazione esclusiva dei pixel, tratto, selezioni, convalida del progetto ed errori dell’API senza ripiego sugli esempi. Le prove browser coprono rifinitura, zoom/pinch, annulla/ripristina, riapertura del gruppo, recupero locale, layout e ricomposizione del PSD identica alla sorgente. Usano immagini e risposte sintetiche dichiarate: verificano il software, **non la qualità del modello AI**. La CI esegue entrambi i flussi in Chromium e WebKit. Una prova reale di Gemini richiede una chiave e un controllo visivo dei contorni; non fa parte della CI.
 

@@ -14,6 +14,7 @@ if (!process.env.TEST_BASE_URL) {
     ['--import', 'tsx', 'server.ts', '--port', '4175'],
     {
       stdio: 'pipe',
+      env: { ...process.env, NODE_ENV: 'production' },
     },
   );
   for (let i = 0; i < 100; i++) {

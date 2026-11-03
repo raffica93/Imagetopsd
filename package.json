@@ -12,9 +12,9 @@
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test src/utils/*.test.ts server/*.test.ts",
-    "test:e2e": "node tests/browser.mjs",
+    "test:e2e": "npm run build && node tests/browser.mjs",
     "preview": "vite preview --host 0.0.0.0 --port 3000",
-    "test:semantic": "node tests/semantic-browser.mjs"
+    "test:semantic": "npm run build && node tests/semantic-browser.mjs"
   },
   "dependencies": {
     "@google/genai": "^2.32.0",
