@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
 import { createApp } from '../server.ts';
-import { createSemanticHandler } from './semanticApi.ts';
+import { createSemanticHandler, inferenceSpec } from './semanticApi.ts';
 const image = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB';
 async function serve(
   infer: Parameters<typeof createSemanticHandler>[0],
@@ -41,7 +41,7 @@ test('valid contours preserve their geometry and declare the actual model and fo
   await serve(
     async (key, model, png, signal) => {
       assert.equal(key, body.userApiKey);
-      assert.equal(model, 'gemini-3.8-flash');
+      assert.equal(model, 'gemini-3.5-flash-lite');
       assert.ok(png.startsWith('iVBORw0KGgo'));
       assert.equal(signal.aborted, false);
       return JSON.stringify({ parts: [region] });
@@ -51,7 +51,7 @@ test('valid contours preserve their geometry and declare the actual model and fo
         data = await response.json();
       assert.equal(response.status, 200);
       assert.equal(data.isMock, false);
-      assert.equal(data.modelUsed, 'gemini-3.8-flash');
+      assert.equal(data.modelUsed, 'gemini-3.5-flash-lite');
       assert.equal(data.maskFormat, 'polygons');
       assert.deepEqual(data.parts[0].polygon, region.polygon);
       assert.deepEqual(data.parts[0].box_2d, region.box_2d);
@@ -151,6 +151,7 @@ test('consent, image bounds, model selection and explicit demo identity are chec
         { ...body, consent: false },
         { ...body, image: 'not png' },
         { ...body, modelId: 'paid-model' },
+        { ...body, stage: 'identify', complexity: 'invented' },
         { useMockDemo: true },
       ])
         assert.equal((await post(url, bad)).status, 400);
@@ -158,6 +159,36 @@ test('consent, image bounds, model selection and explicit demo identity are chec
       assert.equal(demo.status, 200);
       assert.equal((await demo.json()).isMock, true);
       assert.equal(calls, 0);
+    },
+  );
+});
+
+test('complexity changes grouping instructions and survives discovery validation', async () => {
+  const essential = inferenceSpec({
+    stage: 'identify',
+    complexity: 'essential',
+  }).prompt;
+  const detailed = inferenceSpec({
+    stage: 'identify',
+    complexity: 'detailed',
+  }).prompt;
+  assert.match(essential, /complete armor.*together/);
+  assert.match(detailed, /pauldrons/);
+  assert.notEqual(essential, detailed);
+  await serve(
+    async (_key, _model, _image, _signal, task) => {
+      assert.equal(task.stage, 'identify');
+      assert.ok(task.stage === 'identify' && task.complexity === 'essential');
+      return JSON.stringify({ subject: 'Soldato', parts: inventory.parts });
+    },
+    async (url) => {
+      const response = await post(url, {
+        ...body,
+        stage: 'identify',
+        complexity: 'essential',
+      });
+      assert.equal(response.status, 200);
+      assert.equal((await response.json()).inventory.complexity, 'essential');
     },
   );
 });
@@ -273,6 +304,24 @@ test('second pass targets only an identified part and accepts its crop-local con
       assert.equal(data.parts.length, 1);
       assert.equal(data.parts[0].label, 'part:1');
       assert.equal(data.discardedParts, 1);
+    },
+  );
+});
+test('a genuinely invisible part can return no contours without blocking automatic completion', async () => {
+  await serve(
+    async () => JSON.stringify({ parts: [] }),
+    async (url) => {
+      const response = await post(url, {
+        ...body,
+        stage: 'segment-part',
+        inventory,
+        partId: 'part:1',
+      });
+      assert.equal(response.status, 200);
+      const data = await response.json();
+      assert.equal(data.isMock, false);
+      assert.deepEqual(data.parts, []);
+      assert.equal(data.maskFormat, 'polygons');
     },
   );
 });

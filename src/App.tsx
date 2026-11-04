@@ -26,6 +26,7 @@ import {
   LoaderCircle,
   Pencil,
   CheckCheck,
+  Settings2,
 } from 'lucide-react';
 import type { LayerItem, Project, Tool } from './types';
 import { MAX_LAYERS, MAX_PROJECT_PIXELS } from './types';
@@ -51,8 +52,10 @@ import { LayerPanel } from './components/LayerPanel';
 import { Modal } from './components/Modal';
 import { ExtractModal } from './components/ExtractModal';
 import { ExportModal } from './components/ExportModal';
+import { AISettings } from './components/AISettings';
 
-type Dialog = 'guide' | 'settings' | 'extract' | 'export' | 'replace' | null;
+type Dialog =
+  'guide' | 'settings' | 'ai' | 'extract' | 'export' | 'replace' | null;
 type SaveState = 'saved' | 'saving' | 'error';
 const message = (e: unknown) =>
   e instanceof Error ? e.message : 'Qualcosa non ha funzionato. Riprova.';
@@ -67,14 +70,13 @@ function ProjectSettings({
   onSave: (name: string, dpi: number, bg: 'transparent' | 'white') => void;
 }) {
   const [name, setName] = useState(project.settings.name),
-    [dpi, setDpi] = useState(project.settings.dpi),
-    [bg, setBg] = useState(project.settings.backgroundColor);
+    [dpi, setDpi] = useState(project.settings.dpi);
   return (
     <Modal title="Il tuo progetto" onClose={onClose}>
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          onSave(name.trim(), dpi, bg);
+          onSave(name.trim(), dpi, project.settings.backgroundColor);
           onClose();
         }}
       >
@@ -101,17 +103,6 @@ function ProjectSettings({
                   {n} ppi
                 </option>
               ))}
-            </select>
-          </label>
-          <label className="form-field">
-            Sfondo
-            <select
-              aria-label="Sfondo"
-              value={bg}
-              onChange={(e) => setBg(e.target.value as typeof bg)}
-            >
-              <option value="transparent">Trasparente</option>
-              <option value="white">Bianco</option>
             </select>
           </label>
         </div>
@@ -174,8 +165,8 @@ function Welcome({
           <span>Tutti i tuoi livelli.</span>
         </h1>
         <p>
-          Separa i tuoi elementi e portali in Adobe Fresco con separazione
-          anatomica (tratto, accessori, occhi, capelli, pelle, vestiti).
+          Riconosci le parti della tua immagine e portale in Adobe Fresco come
+          livelli ordinati, con la complessità che scegli tu.
           <br className="desktop-break" /> Il tuo prossimo progetto inizia qui.
         </p>
       </div>
@@ -188,7 +179,7 @@ function Welcome({
           <p>
             Scegli un’illustrazione o una foto.
             <br />
-            Isola i tratti, gli accessori e le parti anatomiche.
+            Separa automaticamente parti, oggetti e tratto.
           </p>
           <button className="button primary" onClick={onImport}>
             Carica immagini
@@ -218,7 +209,7 @@ function Welcome({
             style={{ minHeight: '175px' }}
           >
             <div className="sample-card-top" style={{ padding: '12px 18px' }}>
-              <span>SEPARAZIONE ANATOMICA</span>
+              <span>PARTI DEL SOGGETTO</span>
               <span
                 className="sample-tag"
                 style={{
@@ -227,7 +218,7 @@ function Welcome({
                   color: '#6d28d9',
                 }}
               >
-                AI FREE TIER
+                ESEMPIO
               </span>
             </div>
             <div
@@ -709,6 +700,13 @@ export default function App() {
           </button>
         )}
         <div className="header-actions">
+          <button
+            className="icon-button"
+            aria-label="Impostazioni AI"
+            onClick={() => setDialog('ai')}
+          >
+            <Settings2 size={20} />
+          </button>
           {project && (
             <>
               <span
@@ -894,6 +892,7 @@ export default function App() {
           onDemo={demo}
         />
       )}
+      {dialog === 'ai' && <AISettings onClose={() => setDialog(null)} />}
       {dialog === 'guide' && (
         <Modal
           title="Dall’immagine al tuo prossimo progetto."
@@ -916,10 +915,10 @@ export default function App() {
               <section>
                 <h3>Separa e sistema</h3>
                 <p>
-                  Seleziona un livello e tocca “Separa in livelli”: scegli
-                  oggetti distanziati o gruppi di colore. Con “Ritaglia” sposti
-                  una zona rettangolare in un nuovo livello. Trascina per
-                  spostare; usa due dita per navigare.
+                  Seleziona un livello e tocca “Separa in livelli”: scegli la
+                  complessità per avviare riconoscimento e selezione automatici.
+                  Con “Ritaglia” sposti una zona rettangolare in un nuovo
+                  livello. Trascina per spostare; usa due dita per navigare.
                 </p>
               </section>
             </div>
@@ -944,7 +943,7 @@ export default function App() {
           </div>
           <div className="modal-footer">
             <span className="subtle">
-              Nessun account. Nessun upload delle immagini.
+              Progetti locali. L’analisi AI invia l’immagine a Google.
             </span>
             <button className="button primary" onClick={() => setDialog(null)}>
               Ho capito
@@ -968,11 +967,11 @@ export default function App() {
       {dialog === 'extract' && active && (
         <ExtractModal
           layer={extractionSource!}
-          existingLayers={semanticGroup}
           onClose={() => setDialog(null)}
-          onApply={(generated) => {
+          onSettings={() => setDialog('ai')}
+          onApply={(generated, warning) => {
             const layers = preserveSemanticLayerEdits(generated, semanticGroup);
-            return safeCommit((p) => ({
+            const applied = safeCommit((p) => ({
               ...p,
               layers: p.layers.flatMap((l) => {
                 if (active.semanticGroupId) {
@@ -983,6 +982,12 @@ export default function App() {
               }),
               activeLayerId: layers[0]?.id ?? null,
             }));
+            if (applied)
+              notify(
+                warning ||
+                  'Livelli creati e ordinati. Tratto e sfondo separati automaticamente.',
+              );
+            return applied;
           }}
         />
       )}

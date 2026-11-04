@@ -3,13 +3,20 @@ import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createSemanticHandler } from './server/semanticApi.ts';
+import { configuredModel } from './src/utils/aiConfig.ts';
 
 export function createApp(handler = createSemanticHandler()) {
   const app = express();
   app.disable('x-powered-by');
   app.use(express.json({ limit: '24mb' }));
   app.get('/api/health', (_req, res) =>
-    res.json({ status: 'ok', hasApiKey: Boolean(process.env.GEMINI_API_KEY) }),
+    res
+      .setHeader('Cache-Control', 'no-store')
+      .json({
+        status: 'ok',
+        hasApiKey: Boolean(process.env.GEMINI_API_KEY),
+        model: configuredModel(process.env),
+      }),
   );
 
   // Bound concurrent requests per client. Never log request bodies or credentials.
@@ -99,4 +106,3 @@ if (isMain) {
     process.exit(1);
   });
 }
-

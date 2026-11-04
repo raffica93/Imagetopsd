@@ -1,6 +1,12 @@
 import type { Request, Response } from 'express';
 import { GoogleGenAI, Type } from '@google/genai';
 import {
+  configuredModel,
+  COMPLEXITY_PROFILES,
+  isAnalysisComplexity,
+} from '../src/utils/aiConfig.ts';
+import type { AnalysisComplexity } from '../src/utils/aiConfig.ts';
+import {
   validateSemanticResponse,
   validateSemanticInventory,
 } from '../src/utils/semanticProtocol.ts';
@@ -16,37 +22,29 @@ import type {
 
 export type SemanticTask =
   | { stage: 'legacy' }
-  | { stage: 'identify' }
+  | { stage: 'identify'; complexity: AnalysisComplexity }
   | { stage: 'segment-part'; inventory: SemanticInventory; part: DetectedPart };
 export interface SemanticEnvironment {
   GEMINI_API_KEY?: string;
   GEMINI_MODEL?: string;
 }
 
-export const DEFAULT_MODEL = 'gemini-3.8-flash';
-export const ALLOWED_MODELS = [
-  'gemini-3.8-flash',
-  'gemini-3.5-flash-lite',
-  'gemini-flash-latest',
-  'gemini-3.1-flash-lite',
-  'models/gemini-3.8-flash',
-  'models/gemini-3.5-flash-lite',
-  'models/gemini-flash-latest',
-  'models/gemini-3.1-flash-lite',
-];
 export const SEGMENT_PROMPT = `Trace the actual VISIBLE contours of the parts of this character illustration. Use these exact labels: Capelli (all scalp hair and long side strands, NOT eyebrows), Pelle (whole face, ears and exposed skin/neck), Occhi (eyes), Bocca (mouth and lips), Vestiti (clothing), Accessori (earrings, hair ties and small objects), Sfondo (outside the character).
 Return separate regions for disconnected shapes, e.g. each eye and each earring. Never join them with a bridging polygon. Return at most 16 regions. Follow visible edges with 8-64 vertices per region and fewer for small features. Prefer a short approximate contour over hundreds of points. Do not replace contours with bounding rectangles. Skin may include eyes and mouth: the app will subtract the smaller regions. Do not classify black background as hair. Do not segment lineart.
 Return ONLY JSON {"parts":[{"label":"...","box_2d":[ymin,xmin,ymax,xmax],"polygon":[[y,x],...]}]}. All coordinates must be normalized to 0-1000 over the WHOLE image, never negative or above 1000. Each polygon vertex MUST contain exactly TWO numbers [y,x], never four numbers or a rectangle. Only include parts actually visible in this supplied image. Do not invent coordinates or use a template.`;
 
-export const IDENTIFY_PROMPT = `Inspect the actual supplied image and identify useful visible parts for a layered painting project. Cover the WHOLE visible subject, not only clothing or accessories. For human-like characters include visible face/neck skin, eyes, mouth and hair as separate useful editable regions when present, as well as clothing and equipment. For other subjects choose their actual parts instead: do not invent human anatomy. A soldier may have a helmet, upper breastplate, lower armor, sword and shield. Split clearly distinct upper/lower garments or armor; keep small repeated details together. Do not list every tiny mark. Do not include lineart, background or a whole-character layer. Do not omit the face or exposed skin of a human-like subject.
-Return 1-14 non-duplicate parts, sorted FRONT to BACK according to visible occlusion (foreground weapons and accessories before what they cover). Use readable Italian names with spaces, normal capitalization and no underscores (maximum 64 characters), and a short visual description distinguishing each part from neighbours (maximum 240 characters). The subject description must stay under 160 characters. Provide approximate bounding boxes. Discovery boxes are only search locations, NOT selection masks.
+export const IDENTIFY_PROMPT = `Inspect the actual supplied image and identify useful visible parts for a layered painting project. Cover the WHOLE visible subject, not only clothing or accessories. Choose parts specific to this subject, including anatomy, clothing and equipment when visible. For other subjects choose their actual parts instead: do not invent human anatomy. Respect the requested complexity below when deciding which components to group or split. Do not list every tiny mark. Do not include lineart, background or a whole-character layer. Do not omit exposed skin of a human-like subject.
+Return 1-14 non-duplicate parts, sorted FRONT to BACK according to visible occlusion (foreground weapons and accessories before what they cover). Use readable Italian names with spaces, normal capitalization and no underscores (maximum 64 characters), and a short visual description distinguishing each part from neighbours (maximum 240 characters). The subject description must stay under 160 characters. Each approximate box MUST enclose ALL visible pieces belonging to that part, including disconnected pieces: for both eyes or both earrings use their UNION bounds, never the box of only one eye or earring. Discovery boxes are only search locations, NOT selection masks.
 Return JSON {"subject":"short Italian description","parts":[{"name":"...","description":"...","box_2d":[ymin,xmin,ymax,xmax]}]}. Coordinates are normalized 0-1000 over this whole image. All bounds must be within 0-1000 with ymin<ymax and xmin<xmax. Return names specific to this image, not the examples in this instruction.`;
 
-function inferenceSpec(task: SemanticTask) {
-  const box = { type: Type.ARRAY, items: { type: Type.NUMBER } };
+export function inferenceSpec(task: SemanticTask) {
+  // Gemini accepts fixed vertex pairs. Bounding every nested array can make its
+  // constrained decoder reject the entire request; bounds are validated below.
+  const coordinate = { type: Type.NUMBER };
+  const box = { type: Type.ARRAY, items: coordinate };
   if (task.stage === 'identify')
     return {
-      prompt: IDENTIFY_PROMPT,
+      prompt: `${IDENTIFY_PROMPT}\nRequested complexity: ${task.complexity}. ${COMPLEXITY_PROFILES[task.complexity].instruction}`,
       schema: {
         type: Type.OBJECT,
         properties: {
@@ -99,7 +97,12 @@ Return ONLY JSON {"parts":[{"label":"${task.part.id}","box_2d":[ymin,xmin,ymax,x
               box_2d: box,
               polygon: {
                 type: Type.ARRAY,
-                items: { type: Type.ARRAY, items: { type: Type.NUMBER } },
+                items: {
+                  type: Type.ARRAY,
+                  minItems: 2,
+                  maxItems: 2,
+                  items: coordinate,
+                },
               },
             },
             required: ['label', 'box_2d', 'polygon'],
@@ -115,6 +118,7 @@ function statusCode(error: unknown) {
   const value = error as { status?: number; code?: number };
   return value?.status ?? value?.code;
 }
+class InvalidModelOutput extends Error {}
 export function createSemanticHandler(
   infer?: (
     key: string,
@@ -150,7 +154,13 @@ export function createSemanticHandler(
                 role: 'user',
                 parts: [
                   { inlineData: { mimeType: 'image/png', data: image } },
-                  { text: prompt },
+                  {
+                    text:
+                      prompt +
+                      (lastError instanceof InvalidModelOutput
+                        ? '\nThe previous result was incomplete or invalid. Correct the output: exact requested labels, box_2d with four bounds, polygon vertices with exactly two coordinates [y,x] within 0-1000. Use shorter contours and return only the JSON object.'
+                        : ''),
+                  },
                 ],
               },
             ],
@@ -162,13 +172,30 @@ export function createSemanticHandler(
             },
           });
           if (response.candidates?.[0]?.finishReason !== 'STOP')
-            throw new Error('Incomplete segmentation response');
-          return response.text ?? '';
+            throw new InvalidModelOutput('Incomplete response');
+          const text = response.text ?? '';
+          try {
+            const parsed = JSON.parse(text);
+            if (task.stage === 'identify')
+              validateSemanticInventory(parsed, false);
+            else if (!(
+              task.stage === 'segment-part' &&
+              Array.isArray(parsed.parts) &&
+              parsed.parts.length === 0
+            ))
+              validateSemanticResponse(
+                parsed,
+                task.stage === 'segment-part' ? [task.part.id] : undefined,
+              );
+          } catch {
+            throw new InvalidModelOutput('Invalid contours');
+          }
+          return text;
         } catch (err: unknown) {
           lastError = err;
           const status = statusCode(err);
           if (
-            (status === 503 || status === 429) &&
+            (status === 503 || err instanceof InvalidModelOutput) &&
             attempt < 2 &&
             !signal.aborted
           ) {
@@ -185,22 +212,12 @@ export function createSemanticHandler(
   return async (req: Request, res: Response) => {
     const { image, consent, useMockDemo, demoType, userApiKey } =
       req.body ?? {};
-    const requestedModel =
-      req.body?.modelId ?? environment.GEMINI_MODEL ?? DEFAULT_MODEL;
-    const cleanModel =
-      typeof requestedModel === 'string'
-        ? requestedModel.trim().replace(/^models\//, '')
-        : DEFAULT_MODEL;
-    if (
-      requestedModel === 'paid-model' ||
-      (!ALLOWED_MODELS.includes(requestedModel) &&
-        !ALLOWED_MODELS.includes(cleanModel))
-    )
+    const model = configuredModel(environment);
+    if (req.body?.modelId !== undefined && req.body.modelId !== model)
       return res.status(400).json({
         error:
-          'Modello non supportato. Seleziona un modello fra quelli configurati.',
+          'Il modello è configurato dal sito. Ricarica la pagina e riprova.',
       });
-    const model = cleanModel;
     if (useMockDemo === true) {
       if (!['warrior', 'mage'].includes(demoType))
         return res.status(400).json({
@@ -234,8 +251,12 @@ export function createSemanticHandler(
     let task: SemanticTask = { stage: 'legacy' };
     try {
       const stage = req.body?.stage;
-      if (stage === 'identify') task = { stage };
-      else if (stage === 'segment-part') {
+      if (stage === 'identify') {
+        const complexity = req.body.complexity ?? 'balanced';
+        if (!isAnalysisComplexity(complexity))
+          throw new Error('Invalid complexity');
+        task = { stage, complexity };
+      } else if (stage === 'segment-part') {
         const inventory = validateSemanticInventory(req.body.inventory);
         const part = inventory.parts.find((p) => p.id === req.body.partId);
         if (!part) throw new Error('Part not found');
@@ -250,14 +271,11 @@ export function createSemanticHandler(
     const key =
       (typeof userApiKey === 'string' && userApiKey.length < 512
         ? userApiKey.trim()
-        : '') ||
-      environment.GEMINI_API_KEY ||
-      process.env.GEMINI_API_KEY ||
-      process.env.API_KEY;
+        : '') || environment.GEMINI_API_KEY;
     if (!key)
       return res.status(503).json({
         error:
-          'Servizio Google AI Studio non pronto. Riprova tra pochi istanti; i livelli non sono stati modificati.',
+          'Chiave Google non configurata. Apri Impostazioni AI e inserisci una chiave per questa sessione.',
       });
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 90_000);
@@ -279,7 +297,22 @@ export function createSemanticHandler(
         return res.json({
           isMock: false,
           modelUsed: model,
-          inventory: validateSemanticInventory(parsed, false),
+          inventory: validateSemanticInventory(
+            { ...parsed, complexity: task.complexity },
+            false,
+          ),
+        });
+      if (
+        task.stage === 'segment-part' &&
+        Array.isArray(parsed.parts) &&
+        parsed.parts.length === 0
+      )
+        return res.json({
+          isMock: false,
+          modelUsed: model,
+          maskFormat: 'polygons',
+          parts: [],
+          discardedParts: 0,
         });
       const { parts, discardedParts } = validateSemanticResponse(
         parsed,
@@ -293,7 +326,6 @@ export function createSemanticHandler(
         discardedParts,
       });
     } catch (error) {
-      console.error('Gemini API call error:', error);
       if (res.destroyed) return;
       const status = statusCode(error);
       if (status === 429)
@@ -304,12 +336,12 @@ export function createSemanticHandler(
       if (status === 401 || status === 403 || status === 400)
         return res.status(400).json({
           error:
-            'Richiesta non completata dal modello Google AI Studio. Riprova con un ritaglio o con la rifinitura manuale.',
+            'Google non ha accettato la richiesta. Controlla la chiave in Impostazioni AI e riprova.',
         });
       if (status === 503)
         return res.status(503).json({
           error:
-            'I server gratuiti di Google AI Studio sono momentaneamente occupati per alta richiesta. Riprova tra pochi istanti.',
+            'Google è temporaneamente occupato. Riprova tra pochi istanti.',
         });
       if (controller.signal.aborted)
         return res.status(504).json({
@@ -318,7 +350,7 @@ export function createSemanticHandler(
         });
       return res.status(502).json({
         error:
-          'L’AI non ha restituito contorni di segmentazione validi. Riprova l’analisi o usa la rifinitura manuale; non sono stati applicati risultati dimostrativi.',
+          'L’AI non ha restituito contorni validi. Riprendi l’analisi o prova un’altra complessità. Il progetto non è stato modificato.',
       });
     } finally {
       clearTimeout(timer);

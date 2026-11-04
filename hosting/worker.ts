@@ -2,6 +2,7 @@
 import assets from 'virtual:fresco-assets';
 import { handleSemanticWorker, jsonResponse } from './semanticWorker';
 import type { SemanticEnvironment } from '../server/semanticApi';
+import { configuredModel } from '../src/utils/aiConfig';
 const active = new Set<string>();
 export default {
   async fetch(
@@ -14,6 +15,7 @@ export default {
         status: 'ok',
         runtime: 'worker',
         hasApiKey: Boolean(environment.GEMINI_API_KEY),
+        model: configuredModel(environment),
       });
     if (url.pathname === '/api/segment-semantic') {
       const client =

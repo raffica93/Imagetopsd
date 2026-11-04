@@ -57,6 +57,11 @@ globalThis.fetch = async (input, init) => {
   assert.ok(
     body.contents[0].parts[0].inlineData.data.startsWith('iVBORw0KGgo'),
   );
+  assert.equal(
+    body.generationConfig.responseSchema.properties.parts.items.properties
+      .polygon?.items.minItems ?? 2,
+    2,
+  );
   const output =
     ++calls === 1
       ? {
@@ -69,19 +74,29 @@ globalThis.fetch = async (input, init) => {
             },
           ],
         }
-      : {
-          parts: [
-            {
-              label: 'part:1',
-              box_2d: [0, 0, 1000, 1000],
-              polygon: [
-                [0, 0],
-                [0, 1000],
-                [1000, 0],
-              ],
-            },
-          ],
-        };
+      : calls === 2
+        ? {
+            parts: [
+              {
+                label: 'part:1',
+                box_2d: [0, 0, 1000, 1000],
+                polygon: [[0, 0, 1, 1]],
+              },
+            ],
+          }
+        : {
+            parts: [
+              {
+                label: 'part:1',
+                box_2d: [0, 0, 1000, 1000],
+                polygon: [
+                  [0, 0],
+                  [0, 1000],
+                  [1000, 0],
+                ],
+              },
+            ],
+          };
   return new Response(
     JSON.stringify({
       candidates: [
@@ -122,7 +137,11 @@ try {
     regions = await second.json();
   assert.equal(second.status, 200);
   assert.equal(regions.parts[0].label, 'part:1');
-  assert.equal(calls, 2);
+  assert.equal(
+    calls,
+    3,
+    'malformed model contours are retried internally before the UI needs intervention',
+  );
 } finally {
   globalThis.fetch = realFetch;
 }

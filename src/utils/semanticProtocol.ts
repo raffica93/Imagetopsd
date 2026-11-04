@@ -1,3 +1,6 @@
+import { isAnalysisComplexity } from './aiConfig';
+import type { AnalysisComplexity } from './aiConfig';
+
 export const SEMANTIC_LABELS = [
   'Tratto',
   'Accessori',
@@ -21,6 +24,7 @@ export interface DetectedPart {
 export interface SemanticInventory {
   id: string;
   subject: string;
+  complexity?: AnalysisComplexity;
   /** Front to back. System layers are added separately. */
   parts: DetectedPart[];
 }
@@ -104,6 +108,8 @@ export function validateSemanticInventory(
     (typeof raw.id !== 'string' || !/^[a-zA-Z0-9_-]{1,80}$/.test(raw.id))
   )
     throw new Error('Identificativo dell’analisi non valido.');
+  if (raw.complexity !== undefined && !isAnalysisComplexity(raw.complexity))
+    throw new Error('Complessità dell’analisi non valida.');
   const ids = new Set<string>(),
     names = new Set<string>();
   const parts = raw.parts.map((item, index) => {
@@ -145,6 +151,7 @@ export function validateSemanticInventory(
   return {
     id: requireIds ? raw.id : crypto.randomUUID(),
     subject: raw.subject.trim(),
+    ...(raw.complexity ? { complexity: raw.complexity } : {}),
     parts: requireIds ? parts : orderDetectedParts(parts),
   };
 }

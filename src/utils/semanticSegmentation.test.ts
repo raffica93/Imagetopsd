@@ -121,6 +121,28 @@ test('probability masks preserve disconnected eyes and holes instead of a filled
   assert.equal(m.pixelCount, 18);
   assert.equal(m.mask[4 * w + 10], 0);
 });
+
+test('automatic background survives a subject touching one corner without swallowing it', () => {
+  const w = 40,
+    h = 40;
+  const d = image(w, h, (x, y) =>
+    x >= 30 && y >= 30
+      ? [16, 17, 11, 255]
+      : x > 8 && x < 28 && y > 8 && y < 30
+        ? [160, 120, 90, 255]
+        : [0, 0, 0, 255],
+  );
+  const masks = initializeSemanticRefinementMasks(d, w, h, []);
+  const bg = masks.find((mask) => mask.label === 'Sfondo')!;
+  assert.equal(bg.mask[0], 1);
+  assert.equal(bg.mask[35 * w + 35], 0);
+  assert.equal(bg.mask[20 * w + 20], 0);
+  for (let i = 0; i < w * h; i++)
+    assert.equal(
+      masks.reduce((total, mask) => total + mask.mask[i], 0),
+      1,
+    );
+});
 test('every nontransparent pixel has exactly one owner, including low alpha and ink', () => {
   const w = 20,
     h = 20,

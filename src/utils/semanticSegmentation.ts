@@ -79,7 +79,7 @@ export const SEMANTIC_HIERARCHY: MaskDefinition[] = [
     label: 'Da assegnare',
     defaultName: 'Da assegnare',
     colorHex: '#dc46a5',
-    description: 'Pixel conservati che l’AI non ha assegnato: correggili qui',
+    description: 'Pixel originali conservati che l’AI non ha assegnato',
   },
 ];
 export const UNASSIGNED = SEMANTIC_LABELS.indexOf('Da assegnare');
@@ -288,20 +288,32 @@ function borderBackground(
 ) {
   const result = new Uint8Array(width * height),
     corners = [0, width - 1, (height - 1) * width, width * height - 1];
-  const base = corners[0] * 4;
+  // A subject can touch one corner. Use agreement of three corners, rather than
+  // letting a single dark garment disable the otherwise uniform background.
+  const candidates = corners
+    .map((i) => ({
+      i,
+      matches: corners.filter(
+        (other) =>
+          data[other * 4 + 3] > 0 &&
+          Math.hypot(
+            data[other * 4] - data[i * 4],
+            data[other * 4 + 1] - data[i * 4 + 1],
+            data[other * 4 + 2] - data[i * 4 + 2],
+          ) < 15,
+      ).length,
+    }))
+    .filter(
+      ({ i }) =>
+        data[i * 4 + 3] > 0 &&
+        (Math.max(data[i * 4], data[i * 4 + 1], data[i * 4 + 2]) < 30 ||
+          Math.min(data[i * 4], data[i * 4 + 1], data[i * 4 + 2]) > 235),
+    )
+    .sort((a, b) => b.matches - a.matches);
+  if (!candidates.length || candidates[0].matches < 3) return result;
+  const base = candidates[0].i * 4;
   const cornerColor = [data[base], data[base + 1], data[base + 2]];
   if (!(Math.max(...cornerColor) < 30 || Math.min(...cornerColor) > 235))
-    return result;
-  if (
-    !corners.every(
-      (i) =>
-        Math.hypot(
-          data[i * 4] - data[base],
-          data[i * 4 + 1] - data[base + 1],
-          data[i * 4 + 2] - data[base + 2],
-        ) < 15,
-    )
-  )
     return result;
   const queue = new Int32Array(width * height);
   let head = 0,

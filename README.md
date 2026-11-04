@@ -1,59 +1,57 @@
 # FrescoLayers
 
-Un editor di immagini per iPad che esporta **PSD con livelli pixel**. Il flusso è **carica → separa e correggi → esporta**. Usa React, Vite, Express e `ag-psd`.
+Editor per iPad: **carica → scegli la complessità → esporta un PSD con livelli pixel**. React, Vite, Google Gemini, API condivisa Express/Worker e `ag-psd`.
 
 ## Uso su iPad
 
-1. Apri l’app in Safari e carica PNG, JPG o WebP da Foto o File. Più immagini diventano livelli distinti.
-2. Seleziona un livello e tocca **Separa in livelli**. Scegli **Parti del soggetto (AI)** per riconoscere le parti di un soggetto, **Oggetti separati** per sticker distanziati oppure **Per colore** per illustrazioni a tinte distinte.
-3. Tocca **Identifica le parti** dopo il consenso. La prima analisi propone un elenco specifico della foto: per esempio elmo, spada, armatura superiore e inferiore. Puoi rinominare, escludere, spostare o aggiungere parti. Le zone indicative di questa fase non vengono applicate come selezioni.
-4. Tocca **Seleziona le parti**. La seconda fase analizza ogni parte su un ritaglio dedicato e riporta le selezioni sull’immagine originale. In caso di errore puoi riprendere solo le parti mancanti oppure rifinire i risultati già pronti. Nella rifinitura trovi i nomi riconosciuti, più Tratto, Sfondo e Da assegnare. **Seleziona parte** identifica la parte sotto il dito. **Zona** seleziona una regione contigua di colore simile; regola la tolleranza e conferma con **Assegna a…**. **Lazo** delimita una zona prima di assegnarla. **Pennello** trasferisce direttamente i pixel alla parte scelta.
-5. **Togli** sposta i pixel in **Da assegnare**. Annulla/ripristina recupera le correzioni. Due dita ingrandiscono e spostano la vista; sono disponibili anche Naviga, zoom e Adatta. Le viste Isola parte, Selezione e Risultato aiutano a controllare la selezione.
-6. Applica i livelli. Per correggerli di nuovo, seleziona una parte e riapri **Separa in livelli**: il gruppo viene aggiornato senza una seconda chiamata AI e senza aggiungere altri originali.
-7. Tocca **Esporta → PSD a livelli → Prepara PSD**, poi **Condividi / Salva** o **Scarica file**. In Adobe Fresco usa **Importa e apri** dall’app File.
+1. Carica PNG, JPG o WebP da Foto o File.
+2. Tocca **Separa in livelli**, poi una complessità: il processo parte subito.
+   - **Essenziale**: pochi oggetti principali; per esempio un’armatura intera.
+   - **Bilanciata**: parti funzionali; per esempio armatura superiore e inferiore.
+   - **Dettagliata**: componenti visibili; per esempio corazza, spallacci e gambali.
+3. L’app riconosce le parti specifiche del soggetto, le seleziona su ritagli dedicati e crea i livelli nell’ordine proposto. Tratto e sfondo sono automatici. Non ci sono elenco da confermare o strumenti di rifinitura manuale.
+4. Tocca **Esporta → Prepara PSD**, poi **Condividi / Salva** o **Scarica file**. In Adobe Fresco usa **Importa e apri** dall’app File.
 
-Le maschere delle parti si dividono i pixel originali: ogni pixel visibile appartiene a una sola parte, anche con trasparenza tenue. I pixel non riconosciuti restano in **Da assegnare** e un originale nascosto permette il recupero. La ricomposizione dei livelli mantiene l’immagine sorgente; non ricostruisce le parti nascoste sotto capelli, vestiti o tratto. Il tratto viene stimato dal contrasto locale, escludendo lo sfondo: va controllato come le altre selezioni.
+In caso di errore o interruzione, **Riprendi analisi** riutilizza le parti già completate nella finestra corrente. Chiudendo la finestra si abbandonano i risultati non applicati. Una nuova complessità avvia un nuovo riconoscimento. Rianalizzare una parte sostituisce il gruppo precedente senza duplicare l’originale nascosto.
 
-## Separazione in due fasi
+I livelli conservano i pixel originali: ogni pixel visibile appartiene a una sola parte. Le zone non riconosciute rimangono in **Da assegnare**, l’originale nascosto consente il recupero e la composizione preserva la sorgente. Non vengono ricostruite parti nascoste.
 
-La prima richiesta riconosce fino a **14 parti** con nomi, descrizioni e posizioni indicative. L’ordine proposto tiene conto dei dettagli contenuti in parti più grandi; i cambiamenti manuali all’elenco hanno la precedenza. La seconda fase esegue **una richiesta per parte selezionata**, con un ritaglio e contorni normalizzati riferiti a quel ritaglio. I contorni vengono proiettati sulla tela e risolvono le sovrapposizioni nell’ordine dell’elenco. Il tratto sta sopra le parti; sfondo, pixel da assegnare e originale nascosto stanno sotto.
+**Altri metodi · senza AI** contiene due alternative locali per sticker distanziati e grafica piatta, con sfondo automatico. Questi metodi possono ignorare piccoli frammenti; per conservare tutti i pixel usa il flusso delle parti AI.
 
-L’elenco e i suoi identificativi vengono salvati nel progetto riapribile e nel recupero locale. Un errore o un annullamento conserva le selezioni già completate nella finestra corrente; chiudendo la finestra, quelle non applicate vengono abbandonate. Per conservarle, apri la rifinitura e applica i risultati. Non sono ricostruiti oggetti o pixel nascosti.
+## Una configurazione AI
 
-## AI e privacy
+- Provider: **Google Gemini**, tramite Google AI Studio.
+- Modello predefinito: **`gemini-3.5-flash-lite`**, definito in `src/utils/aiConfig.ts`. L’eventuale `GEMINI_MODEL` dell’hosting determina il modello effettivo, mostrato in **Impostazioni AI**. Non ci sono menu di modelli duplicati né ripieghi automatici su altri modelli.
+- Chiave del sito: secret **`GEMINI_API_KEY`**, configurato nell’hosting. Mai in `VITE_*`, repository o bundle.
+- Chiave personale facoltativa: **Impostazioni AI → Chiave Google per questa sessione**. Ha precedenza sul secret e vive solo nella memoria della pagina; il ricaricamento la rimuove. Non viene salvata in localStorage, nei progetti o nei log. La vecchia voce `fresco_gemini_key` viene eliminata all’avvio.
 
-Gemini restituisce **contorni poligonali approssimativi**, che l’app converte in maschere pixel. Non sono segmentazioni precise garantite: capelli e pelle possono sovrapporsi, mancare dettagli o lasciare zone da assegnare. Il modello predefinito è `gemini-3.5-flash-lite`; è selezionabile anche `gemini-3.8-flash`. Disponibilità, quota gratuita ed eventuali costi dipendono dal progetto Google. Non viene scelto automaticamente un altro modello.
+Toccare una complessità autorizza l’invio della foto a Google; la prima richiesta riconosce le parti e le successive inviano un ritaglio per parte. Quote, disponibilità gratuita ed eventuale fatturazione dipendono dal progetto Google AI Studio. Il software non garantisce richieste gratuite o illimitate.
 
-La prima analisi invia la foto; la seconda invia i ritagli delle parti al server dell’app e a Google soltanto dopo consenso esplicito. La chiave può essere configurata nell’ambiente del server oppure inserita per la sessione; l’app non la salva in localStorage, nei progetti o nei log. La precedente voce `fresco_gemini_key` viene rimossa all’apertura della separazione. Non inserire chiavi in variabili `VITE_*` o nel repository.
+Gemini restituisce **contorni poligonali approssimativi**, convertiti in maschere pixel. Il tratto viene stimato dal contrasto locale e lo sfondo dai bordi dell’immagine. Queste stime possono includere zone sbagliate o lasciare dettagli non assegnati: non equivalgono a una segmentazione professionale precisa. La complessità cambia le istruzioni di raggruppamento, non garantisce un numero fisso di livelli.
 
-Errori, quote esaurite, risposte incomplete e chiavi mancanti vengono mostrati senza applicare risultati alla foto. Se soltanto alcuni contorni sono invalidi, vengono scartati con un avviso e si possono rifinire quelli validi; le zone non assegnate restano recuperabili. Le sagome geometriche sono disponibili solo dopo aver caricato esplicitamente uno degli esempi. Non sostituiscono una risposta AI fallita.
+Errori del servizio, quota esaurita e contorni inutilizzabili non applicano risultati alla foto. Le selezioni valide rimangono disponibili per riprendere. Non vengono usate sagome dimostrative al posto dell’analisi.
 
-Puoi usare **Seleziona le parti a mano** senza AI: dopo il riconoscimento mantiene l’elenco proposto; senza riconoscimento offre le categorie di base. La rifinitura manuale e le modalità Oggetti/Per colore lavorano nel browser. Il salvataggio automatico conserva **un solo progetto su quel browser**, senza sincronizzazione tra dispositivi. Esporta una copia `.frescolayers` come backup; usa una sola scheda per lo stesso lavoro.
+## Progetto ed esportazione
 
-## Altre funzioni e limiti
+- Spostamento, rinomina, visibilità, blocco, duplicazione, ordine, opacità, fusione e ritaglio rettangolare nel normale editor.
+- PSD a livelli, PNG della composizione, progetto riapribile `.frescolayers` con elenco delle parti e complessità.
+- Salvataggio locale di un solo progetto su quel browser tramite IndexedDB; nessuna sincronizzazione. Esporta una copia per il backup e usa una sola scheda per lo stesso progetto.
+- Fino a 32 livelli e 12 milioni di pixel sorgente complessivi. Importazione ridotta a 2560 px per lato e 4 milioni di pixel; massimo 30 MB per immagine e 64 MB per progetto.
+- Layout iPad verticale, orizzontale e Split View; navigazione con due dita, annulla/ripristina.
+- La condivisione nativa e l’apertura in Fresco richiedono verifica su iPad reale. Le prove WebKit non sostituiscono questa verifica.
 
-- Ritaglio rettangolare con trasferimento dei pixel, spostamento, rinomina, visibilità, blocco, duplicazione, ordine, opacità e modalità di fusione.
-- PSD con anteprima composita e metadati dei livelli; PNG della composizione; progetto riapribile `.frescolayers` con maschere e gruppi di rifinitura.
-- Recupero locale con IndexedDB; annulla/ripristina con budget di memoria; layout per iPad verticale, orizzontale e Split View.
-- Fino a 32 livelli e 12 milioni di pixel sorgente complessivi. Le immagini importate vengono ridotte a 2560 px per lato e 4 milioni di pixel; limite di 30 MB per immagine e 64 MB per progetto.
-- Le modalità classiche possono ignorare piccoli frammenti o trasparenze molto tenui: l’anteprima lo segnala. La separazione delle parti conserva tutti i pixel con alpha maggiore di zero.
-- Il salvataggio locale non è un backup. Il sito richiede rete per il caricamento e non include una cache offline.
-- Condivisione nativa e apertura in Adobe Fresco richiedono verifica su iPad reale; i test WebKit non sostituiscono questa prova.
+## Sviluppo
 
-## Sviluppo e pubblicazione
-
-Richiede Node.js **22.12+** (CI: Node 24). Usa il lockfile npm incluso.
+Node.js 22.12+ (CI: Node 24), lockfile npm incluso.
 
 ```sh
 npm ci
 npm run dev
 ```
 
-Apri `http://localhost:3000`. Per un iPad sulla stessa rete usa l’indirizzo LAN del computer; la condivisione nativa richiede HTTPS.
+Apri `http://localhost:3000`. Configura l’ambiente del processo usando i nomi di `.env.example`; il server non carica automaticamente `.env`. Per leggere un file locale con Node puoi usare `node --env-file=.env --import tsx server.ts`.
 
-Configura `GEMINI_API_KEY` nel pannello delle variabili del tuo hosting, oppure usa la chiave di sessione nell’interfaccia. Le variabili disponibili sono elencate in [`.env.example`](.env.example): il server legge l’ambiente del processo, **non carica automaticamente un file `.env`**. `GEMINI_MODEL` forza il modello sul server; `PORT` cambia la porta.
-
-Per pubblicare l’app completa serve un host Node con HTTPS:
+Per hosting Node con HTTPS:
 
 ```sh
 npm ci
@@ -61,19 +59,20 @@ npm run build
 NODE_ENV=production npm start
 ```
 
-Express serve `dist/` e `/api/segment-semantic` sulla stessa origine. Consenti al proxy dell’hosting richieste di almeno 24 MB e tempi di risposta di almeno 100 secondi. `npm run preview` o un hosting di soli file statici servono il frontend ma **non forniscono l’API Gemini**; gli strumenti manuali e le modalità classiche rimangono utilizzabili.
+Express serve frontend e API dalla stessa origine. Il proxy deve consentire richieste di 24 MB e risposte di almeno 100 secondi. `npm run preview` serve solo il frontend: le funzioni AI richiedono l’API.
 
 ## Hosting Sites
 
-Il sito esistente è dichiarato in `.openai/hosting.json`. `npm run build:site` prepara un Worker autonomo in `build/site/`: include gli stessi asset Vite e l’API di analisi, senza richiedere un server Express persistente. La logica di riconoscimento è condivisa con la versione Node; le variabili `GEMINI_API_KEY` e `GEMINI_MODEL` vengono lette dalle binding del Worker. La chiave di sessione continua a funzionare senza configurare segreti permanenti.
+Il sito esistente è dichiarato in `.openai/hosting.json`. **`npm run build:site`** genera il Worker autonomo in `build/site/`, con frontend e API condivisa. Configura `GEMINI_API_KEY` come secret e, se necessario, `GEMINI_MODEL` nell’ambiente Sites. `/api/health` restituisce soltanto disponibilità della chiave e modello effettivo, mai il secret.
 
-`node tests/worker-bundle.mjs` controlla il pacchetto e le due fasi dell’API con risposte Google sintetiche. Per verificare il pacchetto nel browser usa `node scripts/preview-site.mjs` e `TEST_BASE_URL=http://127.0.0.1:4177` negli script browser. La pubblicazione va eseguita tramite Sites sul progetto già esistente, preservandone gli accessi.
+Pubblica tramite Sites sul progetto esistente, preservando gli accessi. Per provare il pacchetto identico alla produzione: `node scripts/preview-site.mjs`, poi `TEST_BASE_URL=http://127.0.0.1:4177` negli script browser.
 
 ## Verifica
 
 ```sh
 npm test
-npm run build
+npm run build:site
+node tests/worker-bundle.mjs
 npx playwright install --with-deps chromium webkit
 npm run test:e2e
 npm run test:semantic
@@ -81,16 +80,14 @@ TEST_BROWSER=webkit npm run test:e2e
 TEST_BROWSER=webkit npm run test:semantic
 ```
 
-Gli script browser compilano la build e avviano e chiudono un server di produzione locale (porte 4173 e 4175), senza il client di sviluppo Vite. `TEST_BASE_URL` usa un server già avviato, `CHROMIUM_PATH` sceglie l’eseguibile e `TEST_ARTIFACTS` la cartella dei risultati.
-
-I test unitari verificano elenchi dinamici, ordine dei dettagli rispetto alle parti che li contengono, proiezione dei ritagli, contorni concavi, regioni disconnesse, assegnazione esclusiva dei pixel, tratto, selezioni, convalida del progetto ed errori dell’API senza ripiego sugli esempi. Le prove browser coprono un soldato sintetico con elmo, spada e due pezzi di armatura, rinomina/esclusione/ordine, ripresa dopo quota esaurita, rifinitura, zoom/pinch, annulla/ripristina, riapertura del gruppo, recupero locale, layout e ricomposizione del PSD identica alla sorgente. Usano immagini e risposte sintetiche dichiarate: verificano il software, **non la qualità del modello AI**. La CI esegue entrambi i flussi in Chromium e WebKit. Una prova reale di Gemini richiede una chiave e un controllo visivo dei contorni; non fa parte della CI.
+I test verificano convalida, complessità nel prompt, coordinate dei ritagli, conservazione dei pixel, ordine, secret separati per richiesta e API senza sagome di ripiego. I browser coprono avvio con un solo tocco, selezione e applicazione automatiche, ripresa dopo quota esaurita, chiave in memoria, sostituzione dei gruppi, metadati, PSD e quattro dimensioni dello schermo. Le risposte Google sintetiche in CI verificano il software; la qualità dei contorni richiede prove su foto reali con una chiave valida.
 
 ## Struttura
 
-- `server.ts` e `server/semanticApi.ts`: hosting Express e chiamate Google con consenso, timeout e convalida.
-- `src/App.tsx`: progetto, livelli, importazione e recupero.
-- `src/components/SemanticDiscovery.tsx`: riconoscimento delle parti, elenco modificabile, selezione per ritagli e ripresa degli errori.
-- `src/components/SemanticRefinementStudio.tsx`: selezione, correzione e navigazione touch.
-- `src/utils/semanticProtocol.ts` e `semanticSegmentation.ts`: contorni, maschere, proprietà dei pixel e ricostruzione dei livelli.
-- `src/utils/extraction.ts` e `src/workers/extraction.worker.ts`: modalità Oggetti e Per colore.
-- `src/utils/psdExport.ts` e `projectStorage.ts`: esportazione e formato riapribile.
+- `src/components/AISettings.tsx`: configurazione unica e chiave della sessione.
+- `src/components/SemanticDiscovery.tsx`: complessità, riconoscimento e selezione automatica per ritagli.
+- `src/components/ExtractModal.tsx`: applicazione diretta e metodi locali opzionali.
+- `src/utils/aiConfig.ts`: modello e istruzioni delle complessità.
+- `src/utils/semanticProtocol.ts`, `semanticSegmentation.ts`: parti, maschere e proprietà esclusive dei pixel.
+- `server/semanticApi.ts`, `hosting/semanticWorker.ts`: stessa API per Node e Worker.
+- `src/utils/projectStorage.ts`, `psdExport.ts`: salvataggio ed esportazione.

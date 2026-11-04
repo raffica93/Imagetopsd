@@ -108,12 +108,8 @@ try {
   await choose('Prova con sticker botanici');
   await count(1);
   await choose('Separa in livelli');
-  await page.getByRole('button', { name: /Oggetti separati/ }).click();
-  await choose('Trova i livelli');
-  await expect(
-    page.getByText('4 livelli rilevati', { exact: true }),
-  ).toBeVisible();
-  await choose('Usa questi livelli');
+  await page.getByText('Altri metodi · senza AI', { exact: true }).click();
+  await choose('Oggetti separati');
   await count(4);
   console.log('PASS import validation + worker extraction');
 
@@ -192,7 +188,7 @@ try {
     .getByLabel('Nome del progetto', { exact: true })
     .fill('Prova iPad');
   await page.getByLabel('Risoluzione', { exact: true }).selectOption('150');
-  await page.getByLabel('Sfondo', { exact: true }).selectOption('white');
+  await expect(page.getByLabel('Sfondo', { exact: true })).toHaveCount(0);
   await choose('Salva modifiche');
   await choose('Nascondi Elemento 4');
   const expectedPixels = await compositeSamples();
@@ -206,15 +202,15 @@ try {
   });
   assert.equal(psd.width, 1200);
   assert.equal(psd.height, 900);
-  assert.equal(psd.children.length, 5);
+  assert.equal(psd.children.length, 4);
   assert.deepEqual(
     psd.children.map((l) => l.name),
-    ['Sfondo', 'Elemento 4', 'Elemento 3', 'Elemento 2', 'Fiore'],
+    ['Elemento 4', 'Elemento 3', 'Elemento 2', 'Fiore'],
   );
-  assert.equal(psd.children[1].hidden, true);
-  assert.ok(Math.abs(psd.children[4].opacity - 0.99) < 0.005);
+  assert.equal(psd.children[0].hidden, true);
+  assert.ok(Math.abs(psd.children[3].opacity - 0.99) < 0.005);
   assert.equal(psd.imageResources.resolutionInfo.horizontalResolution, 150);
-  assert.ok(psd.children.slice(1).every((l) => l.imageData.data.length > 0));
+  assert.ok(psd.children.every((l) => l.imageData.data.length > 0));
   const actualPixels = [
     [0, 0],
     [295, 275],
@@ -223,10 +219,15 @@ try {
   ].map(([x, y]) => [
     ...psd.imageData.data.slice((y * 1200 + x) * 4, (y * 1200 + x) * 4 + 4),
   ]);
-  assert.deepEqual(
-    actualPixels,
-    expectedPixels,
-    'PSD composite must match the preview',
+  // PNG/PSD canvas readback can round unpremultiplied RGB by one at partial alpha.
+  actualPixels.forEach((pixel, i) =>
+    pixel.forEach((channel, j) =>
+      assert.ok(
+        Math.abs(channel - expectedPixels[i][j]) <=
+          (j < 3 && pixel[3] > 0 && pixel[3] < 255 ? 1 : 0),
+        'PSD composite must match preview within canvas alpha rounding',
+      ),
+    ),
   );
   console.log(
     'PASS PSD round trip: pixels, order, hidden layers, opacity, ppi, background',
