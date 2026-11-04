@@ -24,7 +24,16 @@ export interface SemanticEnvironment {
 }
 
 export const DEFAULT_MODEL = 'gemini-3.8-flash';
-export const ALLOWED_MODELS = ['gemini-3.8-flash', 'gemini-3.5-flash-lite'];
+export const ALLOWED_MODELS = [
+  'gemini-3.8-flash',
+  'gemini-3.5-flash-lite',
+  'gemini-flash-latest',
+  'gemini-3.1-flash-lite',
+  'models/gemini-3.8-flash',
+  'models/gemini-3.5-flash-lite',
+  'models/gemini-flash-latest',
+  'models/gemini-3.1-flash-lite',
+];
 export const SEGMENT_PROMPT = `Trace the actual VISIBLE contours of the parts of this character illustration. Use these exact labels: Capelli (all scalp hair and long side strands, NOT eyebrows), Pelle (whole face, ears and exposed skin/neck), Occhi (eyes), Bocca (mouth and lips), Vestiti (clothing), Accessori (earrings, hair ties and small objects), Sfondo (outside the character).
 Return separate regions for disconnected shapes, e.g. each eye and each earring. Never join them with a bridging polygon. Return at most 16 regions. Follow visible edges with 8-64 vertices per region and fewer for small features. Prefer a short approximate contour over hundreds of points. Do not replace contours with bounding rectangles. Skin may include eyes and mouth: the app will subtract the smaller regions. Do not classify black background as hair. Do not segment lineart.
 Return ONLY JSON {"parts":[{"label":"...","box_2d":[ymin,xmin,ymax,xmax],"polygon":[[y,x],...]}]}. All coordinates must be normalized to 0-1000 over the WHOLE image, never negative or above 1000. Each polygon vertex MUST contain exactly TWO numbers [y,x], never four numbers or a rectangle. Only include parts actually visible in this supplied image. Do not invent coordinates or use a template.`;
@@ -176,8 +185,22 @@ export function createSemanticHandler(
   return async (req: Request, res: Response) => {
     const { image, consent, useMockDemo, demoType, userApiKey } =
       req.body ?? {};
-    const model =
-      environment.GEMINI_MODEL ?? req.body?.modelId ?? DEFAULT_MODEL;
+    const requestedModel =
+      req.body?.modelId ?? environment.GEMINI_MODEL ?? DEFAULT_MODEL;
+    const cleanModel =
+      typeof requestedModel === 'string'
+        ? requestedModel.trim().replace(/^models\//, '')
+        : DEFAULT_MODEL;
+    if (
+      requestedModel === 'paid-model' ||
+      (!ALLOWED_MODELS.includes(requestedModel) &&
+        !ALLOWED_MODELS.includes(cleanModel))
+    )
+      return res.status(400).json({
+        error:
+          'Modello non supportato. Seleziona un modello fra quelli configurati.',
+      });
+    const model = cleanModel;
     if (useMockDemo === true) {
       if (!['warrior', 'mage'].includes(demoType))
         return res.status(400).json({
@@ -197,11 +220,6 @@ export function createSemanticHandler(
       return res.status(400).json({
         error:
           'Conferma l’invio dell’immagine a Google prima di avviare l’analisi.',
-      });
-    if (!ALLOWED_MODELS.includes(model))
-      return res.status(400).json({
-        error:
-          'Modello non supportato. Seleziona un modello fra quelli configurati.',
       });
     if (
       typeof image !== 'string' ||
