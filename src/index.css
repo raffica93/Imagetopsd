@@ -3265,3 +3265,49 @@ strong {
   min-height: 44px;
   padding: 12px 0;
 }
+
+.discovery-integrated-model-card {
+  background: #f3f7ee;
+  border: 1px solid #d4e2c8;
+  border-radius: 10px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.integrated-model-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.integrated-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  background: #2b7a4b;
+  color: #ffffff;
+  padding: 3px 8px;
+  border-radius: 6px;
+}
+.integrated-model-header .model-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: #1e3a24;
+}
+.integrated-model-desc {
+  font-size: 12px;
+  color: #4f6350;
+  line-height: 1.45;
+  margin: 0;
+}
+.consent-box.active {
+  background: #f8faf5;
+  border-color: #d6e2cc;
+  cursor: default;
+}

@@ -11,6 +11,7 @@ export function createApp(handler = createSemanticHandler()) {
   app.get('/api/health', (_req, res) =>
     res.json({ status: 'ok', hasApiKey: Boolean(process.env.GEMINI_API_KEY) }),
   );
+
   // Bound concurrent requests per client. Never log request bodies or credentials.
   const active = new Set<string>();
   app.post('/api/segment-semantic', async (req, res) => {
@@ -57,24 +58,45 @@ async function start() {
   } else {
     const { createServer } = await import('vite');
     const vite = await createServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: false,
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
   }
-  const args = process.argv.slice(2),
-    portIndex = args.indexOf('--port');
-  const port = Number(
-    process.env.PORT ?? (portIndex >= 0 ? args[portIndex + 1] : 3000),
-  );
-  if (!Number.isInteger(port) || port < 1 || port > 65535)
-    throw new Error('Porta non valida.');
-  app.listen(port, '0.0.0.0', () =>
-    console.log(`FrescoLayers: http://localhost:${port}`),
-  );
+  const args = process.argv.slice(2);
+  const portIndex = args.indexOf('--port');
+  const hostIndex = args.indexOf('--host');
+  const cliPort =
+    portIndex >= 0 && args[portIndex + 1] ? Number(args[portIndex + 1]) : NaN;
+  const host =
+    hostIndex >= 0 && args[hostIndex + 1] ? args[hostIndex + 1] : '0.0.0.0';
+  // CLI --port flag takes strict precedence over process.env.PORT
+  const port =
+    Number.isInteger(cliPort) && cliPort > 0 && cliPort <= 65535
+      ? cliPort
+      : Number(process.env.PORT) || 3000;
+
+  const server = app.listen(port, host, () => {
+    console.log(`FrescoLayers: http://${host}:${port}`);
+  });
+  server.on('error', (err) => {
+    console.error('Server listen error:', err);
+  });
 }
-if (
-  process.argv[1] &&
-  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
-)
-  void start();
+
+const isMain =
+  Boolean(process.argv[1]) &&
+  !process.env.NODE_TEST_CONTEXT &&
+  (path.resolve(process.argv[1]) === fileURLToPath(import.meta.url) ||
+    path.basename(process.argv[1]) === 'server.ts');
+
+if (isMain) {
+  void start().catch((err) => {
+    console.error('Failed to start server:', err);
+    process.exit(1);
+  });
+}
+

@@ -23,6 +23,7 @@ export interface SemanticEnvironment {
   GEMINI_MODEL?: string;
 }
 
+export const DEFAULT_MODEL = 'gemini-3.8-flash';
 export const ALLOWED_MODELS = ['gemini-3.8-flash', 'gemini-3.5-flash-lite'];
 export const SEGMENT_PROMPT = `Trace the actual VISIBLE contours of the parts of this character illustration. Use these exact labels: Capelli (all scalp hair and long side strands, NOT eyebrows), Pelle (whole face, ears and exposed skin/neck), Occhi (eyes), Bocca (mouth and lips), Vestiti (clothing), Accessori (earrings, hair ties and small objects), Sfondo (outside the character).
 Return separate regions for disconnected shapes, e.g. each eye and each earring. Never join them with a bridging polygon. Return at most 16 regions. Follow visible edges with 8-64 vertices per region and fewer for small features. Prefer a short approximate contour over hundreds of points. Do not replace contours with bounding rectangles. Skin may include eyes and mouth: the app will subtract the smaller regions. Do not classify black background as hair. Do not segment lineart.
@@ -121,35 +122,62 @@ export function createSemanticHandler(
     infer ??
     (async (key, model, image, signal, task) => {
       const { prompt, schema } = inferenceSpec(task);
-      const ai = new GoogleGenAI({ apiKey: key });
-      const response = await ai.models.generateContent({
-        model,
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              { inlineData: { mimeType: 'image/png', data: image } },
-              { text: prompt },
-            ],
+      const ai = new GoogleGenAI({
+        apiKey: key,
+        httpOptions: {
+          headers: {
+            'User-Agent': 'aistudio-build',
           },
-        ],
-        config: {
-          abortSignal: signal,
-          responseMimeType: 'application/json',
-          maxOutputTokens: 32768,
-          temperature: 0.2,
-          responseSchema: schema,
         },
       });
-      if (response.candidates?.[0]?.finishReason !== 'STOP')
-        throw new Error('Incomplete segmentation response');
-      return response.text ?? '';
+      let lastError: unknown;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (signal.aborted) throw new Error('aborted');
+        try {
+          const response = await ai.models.generateContent({
+            model,
+            contents: [
+              {
+                role: 'user',
+                parts: [
+                  { inlineData: { mimeType: 'image/png', data: image } },
+                  { text: prompt },
+                ],
+              },
+            ],
+            config: {
+              abortSignal: signal,
+              responseMimeType: 'application/json',
+              maxOutputTokens: 32768,
+              responseSchema: schema,
+            },
+          });
+          if (response.candidates?.[0]?.finishReason !== 'STOP')
+            throw new Error('Incomplete segmentation response');
+          return response.text ?? '';
+        } catch (err: unknown) {
+          lastError = err;
+          const status = statusCode(err);
+          if (
+            (status === 503 || status === 429) &&
+            attempt < 2 &&
+            !signal.aborted
+          ) {
+            await new Promise((r) =>
+              setTimeout(r, 1000 * Math.pow(2, attempt)),
+            );
+            continue;
+          }
+          throw err;
+        }
+      }
+      throw lastError;
     });
   return async (req: Request, res: Response) => {
     const { image, consent, useMockDemo, demoType, userApiKey } =
       req.body ?? {};
     const model =
-      environment.GEMINI_MODEL ?? req.body?.modelId ?? 'gemini-3.5-flash-lite';
+      environment.GEMINI_MODEL ?? req.body?.modelId ?? DEFAULT_MODEL;
     if (useMockDemo === true) {
       if (!['warrior', 'mage'].includes(demoType))
         return res.status(400).json({
@@ -204,11 +232,14 @@ export function createSemanticHandler(
     const key =
       (typeof userApiKey === 'string' && userApiKey.length < 512
         ? userApiKey.trim()
-        : '') || environment.GEMINI_API_KEY;
+        : '') ||
+      environment.GEMINI_API_KEY ||
+      process.env.GEMINI_API_KEY ||
+      process.env.API_KEY;
     if (!key)
       return res.status(503).json({
         error:
-          'Configura una chiave Google sul server o inseriscila per questa sessione. La foto non è stata analizzata e non verranno usate sagome dimostrative.',
+          'Servizio Google AI Studio non pronto. Riprova tra pochi istanti; i livelli non sono stati modificati.',
       });
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 90_000);
@@ -244,6 +275,7 @@ export function createSemanticHandler(
         discardedParts,
       });
     } catch (error) {
+      console.error('Gemini API call error:', error);
       if (res.destroyed) return;
       const status = statusCode(error);
       if (status === 429)
@@ -254,12 +286,12 @@ export function createSemanticHandler(
       if (status === 401 || status === 403 || status === 400)
         return res.status(400).json({
           error:
-            'Google ha rifiutato la richiesta. Verifica chiave, modello e accesso al progetto. I livelli sono al sicuro.',
+            'Richiesta non completata dal modello Google AI Studio. Riprova con un ritaglio o con la rifinitura manuale.',
         });
       if (status === 503)
         return res.status(503).json({
           error:
-            'Il modello Google è temporaneamente occupato. Riprova più tardi; non sono state applicate sagome di prova alla foto.',
+            'I server gratuiti di Google AI Studio sono momentaneamente occupati per alta richiesta. Riprova tra pochi istanti.',
         });
       if (controller.signal.aborted)
         return res.status(504).json({

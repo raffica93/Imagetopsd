@@ -20,7 +20,7 @@ test('Worker discovery reuses validation and returns dynamic parts through a Web
     {},
     async (key, model, png, signal, task) => {
       assert.equal(key, body.userApiKey);
-      assert.equal(model, 'gemini-3.5-flash-lite');
+      assert.equal(model, 'gemini-3.8-flash');
       assert.equal(task.stage, 'identify');
       assert.equal(signal.aborted, false);
       assert.ok(png.startsWith('iVBORw0KGgo'));

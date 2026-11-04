@@ -41,7 +41,7 @@ test('valid contours preserve their geometry and declare the actual model and fo
   await serve(
     async (key, model, png, signal) => {
       assert.equal(key, body.userApiKey);
-      assert.equal(model, 'gemini-3.5-flash-lite');
+      assert.equal(model, 'gemini-3.8-flash');
       assert.ok(png.startsWith('iVBORw0KGgo'));
       assert.equal(signal.aborted, false);
       return JSON.stringify({ parts: [region] });
@@ -51,7 +51,7 @@ test('valid contours preserve their geometry and declare the actual model and fo
         data = await response.json();
       assert.equal(response.status, 200);
       assert.equal(data.isMock, false);
-      assert.equal(data.modelUsed, 'gemini-3.5-flash-lite');
+      assert.equal(data.modelUsed, 'gemini-3.8-flash');
       assert.equal(data.maskFormat, 'polygons');
       assert.deepEqual(data.parts[0].polygon, region.polygon);
       assert.deepEqual(data.parts[0].box_2d, region.box_2d);

@@ -54,9 +54,8 @@ export function SemanticDiscovery({
   onBusyChange: (busy: boolean) => void;
   onInventoryChange?: (hasInventory: boolean) => void;
 }) {
-  const [model, setModel] = useState('gemini-3.5-flash-lite'),
-    [key, setKey] = useState(''),
-    [consent, setConsent] = useState(false);
+  const model = 'gemini-3.8-flash';
+  const consent = true;
   const [inventory, setInventory] = useState<SemanticInventory | null>(
       layer.semanticInventory ?? null,
     ),
@@ -95,9 +94,8 @@ export function SemanticDiscovery({
       signal,
       body: JSON.stringify({
         ...body,
-        modelId: model,
-        consent,
-        userApiKey: key.trim() || undefined,
+        modelId: 'gemini-3.8-flash',
+        consent: true,
       }),
     });
     let data;
@@ -355,33 +353,14 @@ export function SemanticDiscovery({
         .length ?? 0,
     selectedCount = chosen.size;
   const providerSettings = (
-    <div className="form-grid">
-      <label className="form-field">
-        Modello Google
-        <select
-          value={model}
-          disabled={busy}
-          onChange={(e) => setModel(e.target.value)}
-        >
-          <option value="gemini-3.5-flash-lite">gemini-3.5-flash-lite</option>
-          <option value="gemini-3.8-flash">gemini-3.8-flash</option>
-        </select>
-      </label>
-      <details className="discovery-key">
-        <summary>Chiave Google per questa sessione</summary>
-        <p className="note-text">
-          Facoltativa se già configurata sul server. Non viene salvata nel
-          browser o nel progetto.
-        </p>
-        <input
-          type="password"
-          aria-label="Chiave Google per questa sessione"
-          autoComplete="off"
-          value={key}
-          disabled={busy}
-          onChange={(e) => setKey(e.target.value)}
-        />
-      </details>
+    <div className="discovery-integrated-model-card" role="status">
+      <div className="integrated-model-header">
+        <span className="integrated-badge">AI Studio Integrato · Gratuito</span>
+        <span className="model-name">Gemini 3.8 Flash</span>
+      </div>
+      <p className="integrated-model-desc">
+        Identificazione anatomica e creazione livelli gestita con il modello gratuito multimodale integrato in Google AI Studio. Nessuna chiave o costo richiesto.
+      </p>
     </div>
   );
   return (
@@ -524,27 +503,20 @@ export function SemanticDiscovery({
         </>
       )}
       {inventory && (
-        <details className="discovery-provider">
-          <summary>Modello e chiave per la selezione</summary>
+        <div className="discovery-provider-section">
           {providerSettings}
-        </details>
+        </div>
       )}
-      <label className="consent-box">
-        <input
-          type="checkbox"
-          checked={consent}
-          disabled={busy}
-          onChange={(e) => setConsent(e.target.checked)}
-        />
+      <div className="consent-box active">
         <span className="consent-text">
           <ShieldCheck size={16} />
           <span>
             {inventory
-              ? 'Invio dei ritagli a Google. Quote e costi dipendono dal mio progetto; nel piano gratuito i dati possono migliorare i prodotti Google.'
-              : 'Accetto l’invio dell’immagine e dei ritagli a Google. Quote e costi dipendono dal mio progetto. Nel piano gratuito Google può usare i dati per migliorare i prodotti.'}
+              ? 'Invio dei ritagli a Gemini 3.8 Flash (piano gratuito integrato in AI Studio).'
+              : 'Analisi ed estrazione con Gemini 3.8 Flash (piano gratuito integrato in AI Studio).'}
           </span>
         </span>
-      </label>
+      </div>
       {progress && (
         <p className="discovery-progress" role="status">
           <LoaderCircle size={18} className="spin" />
